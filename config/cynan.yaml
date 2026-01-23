@@ -1,0 +1,22 @@
+core:
+  sip_port: 5060
+  allow_tls: true
+  metrics_port: 9100
+database:
+  host: localhost
+  port: 5432
+  user: cynan
+  password: change_me
+  name: cynan_hss
+transport:
+  udp_addr: 0.0.0.0:5060
+  tcp_addr: 0.0.0.0:3868
+  tls:
+    cert_path: /etc/cynan/certs/core.crt
+    key_path: /etc/cynan/certs/core.key
+armoricore:
+  grpc_target: http://127.0.0.1:50051
+  nats_url: nats://127.0.0.1:4222
+security:
+  require_tls: true
+  ipsec_policy: strict

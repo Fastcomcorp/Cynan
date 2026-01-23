@@ -1,0 +1,142 @@
+// Copyright (c) 2026 Fastcomcorp, LLC. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package armoricore.media;
+
+// Media types supported by the engine
+enum MediaType {
+  AUDIO = 0;
+  VIDEO = 1;
+  SCREEN = 2;
+}
+
+// Codec types for audio/video streams
+enum CodecType {
+  // Audio codecs
+  OPUS = 0;
+  AAC = 1;
+  PCM = 2;
+
+  // Video codecs
+  H264 = 10;
+  VP9 = 11;
+  AV1 = 12;
+}
+
+// Stream configuration for media sessions
+message StreamConfig {
+  string user_id = 1;
+  MediaType media_type = 2;
+  CodecType codec = 3;
+  uint32 sample_rate = 4;  // Audio only
+  uint32 channels = 5;     // Audio only
+  uint32 bitrate = 6;      // Target bitrate in kbps
+  uint32 width = 7;        // Video only
+  uint32 height = 8;       // Video only
+  uint32 frame_rate = 9;   // Video only
+  string sdp_offer = 10;   // SIP SDP offer for compatibility
+}
+
+// Stream creation request
+message CreateStreamRequest {
+  StreamConfig config = 1;
+}
+
+// Stream creation response
+message CreateStreamResponse {
+  string stream_id = 1;
+  string sdp_answer = 2;   // ArcRTC SDP answer
+  uint32 rtp_port = 3;     // RTP port for media stream
+}
+
+// Stream status query response
+message StreamStatus {
+  string stream_id = 1;
+  bool is_active = 2;
+  uint64 bytes_sent = 3;
+  uint64 bytes_received = 4;
+  uint32 packets_sent = 5;
+  uint32 packets_received = 6;
+  uint32 packets_lost = 7;
+}
+
+// Empty message for requests that only need stream ID
+message StreamRequest {
+  string stream_id = 1;
+}
+
+// Media Engine gRPC service definition
+service MediaEngine {
+  // Stream lifecycle management
+  rpc CreateStream(CreateStreamRequest) returns (CreateStreamResponse);
+  rpc StopStream(StreamRequest) returns (google.protobuf.Empty);
+  rpc GetStream(StreamRequest) returns (StreamStatus);
+
+  // Stream control
+  rpc UpdateStreamState(StreamRequest) returns (google.protobuf.Empty);
+
+  // Statistics
+  rpc GetStreamStats(StreamRequest) returns (StreamStatus);
+
+  // Packet routing (for RTP forwarding)
+  rpc RoutePacket(RoutePacketRequest) returns (google.protobuf.Empty);
+
+  // Audio processing
+  rpc EncodeAudio(AudioRequest) returns (AudioResponse);
+  rpc DecodeAudio(AudioRequest) returns (AudioResponse);
+
+  // Video processing
+  rpc EncodeVideo(VideoRequest) returns (VideoResponse);
+  rpc DecodeVideo(VideoRequest) returns (VideoResponse);
+}
+
+// Packet routing request for RTP forwarding
+message RoutePacketRequest {
+  string stream_id = 1;
+  bytes packet_data = 2;
+  string destination_ip = 3;
+  uint32 destination_port = 4;
+}
+
+// Audio processing requests/responses
+message AudioRequest {
+  string stream_id = 1;
+  bytes audio_data = 2;
+  CodecType input_codec = 3;
+  CodecType output_codec = 4;
+  uint32 sample_rate = 5;
+  uint32 channels = 6;
+}
+
+message AudioResponse {
+  bytes processed_data = 1;
+  uint32 samples_processed = 2;
+}
+
+// Video processing requests/responses
+message VideoRequest {
+  string stream_id = 1;
+  bytes video_data = 2;
+  CodecType input_codec = 3;
+  CodecType output_codec = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+}
+
+message VideoResponse {
+  bytes processed_data = 1;
+  uint32 frames_processed = 2;
+}
