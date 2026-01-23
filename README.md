@@ -593,19 +593,31 @@ src/
 
 ## License
 
-Copyright 2024 Fastcomcorp, LLC
+Copyright 2026 Fastcomcorp, LLC. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+### Proprietary License
 
-    http://www.apache.org/licenses/LICENSE-2.0
+**Cynan IMS Core** is proprietary software owned by Fastcomcorp, LLC.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+#### Permitted Use
+- **Personal/Educational**: Non-commercial use for learning, research, and development purposes
+- **Evaluation**: Limited evaluation and testing in non-production environments
+- **Academic**: Use in academic institutions for research and teaching
+
+#### Restrictions
+- **No Commercial Use**: Commercial use, distribution, or deployment requires a commercial license
+- **No Redistribution**: Redistribution in any form is prohibited without explicit written permission
+- **No Modification**: Modification and creation of derivative works is prohibited without a commercial license
+- **No Reverse Engineering**: Reverse engineering, decompilation, or disassembly is strictly prohibited
+
+#### Commercial Licensing
+For commercial use, enterprise deployment, or any production environment usage, contact:
+- **Email**: licensing@fastcomcorp.com
+- **Website**: https://fastcomcorp.com/licensing
+- **Phone**: +1 (555) 123-4567
+
+#### Warranty Disclaimer
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL FASTCOMCORP, LLC BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
 
 ## Support
 

@@ -4,7 +4,7 @@ version = "0.7.0"
 edition = "2021"
 authors = ["Fastcomcorp, LLC"]
 description = "Development version of comprehensive IMS core with Armoricore integration, Diameter HSS interfaces, RTP packet routing, TLS certificates, BGCF/MGCF PSTN interconnect, IBCF inter-operator security, SLF multi-HSS support, and Application Server integration - NOT FOR PRODUCTION USE"
-license = "Apache-2.0"
+license = "Proprietary"
 
 [dependencies]
 tokio = { version = "1.43", features = ["full"] }
