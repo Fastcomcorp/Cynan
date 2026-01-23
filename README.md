@@ -636,7 +636,7 @@ THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 For enterprise evaluation, development support, and production readiness assessment, contact:
 - **Email**: support@fastcomcorp.com
 - **Website**: https://fastcomcorp.com
-- **Phone**: +1 (555) 123-4567
+- **Phone**: +1 (251) 645-2261
 
 ### Security Disclosures
 Please report security vulnerabilities to security@fastcomcorp.com with detailed information about the issue.
