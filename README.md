@@ -1,6 +1,6 @@
 # Cynan IMS Core
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-Proprietary-red.svg)]()
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org/)
 [![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg)]()
 [![Build Status](https://img.shields.io/badge/Build-Development-red.svg)]()
