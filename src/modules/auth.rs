@@ -413,13 +413,14 @@ mod tests {
 
     #[test]
     fn test_digest_computation() {
+        let nonce = generate_nonce();
         let response = compute_digest_response(
             "user",
             "realm",
             "password",
             "REGISTER",
             "sip:domain",
-            "nonce",
+            &nonce,
             None,
             None,
             None,
@@ -429,10 +430,12 @@ mod tests {
 
     #[test]
     fn test_parse_authorization() {
-        let header = r#"Digest username="user", realm="realm", nonce="nonce", response="response""#;
-        let params = parse_authorization(header).unwrap();
+        let nonce = generate_nonce();
+        let header = format!(r#"Digest username="user", realm="realm", nonce="{}", response="response""#, nonce);
+        let params = parse_authorization(&header).unwrap();
         assert_eq!(params.get("username").map(|s| s.as_str()), Some("user"));
         assert_eq!(params.get("realm").map(|s| s.as_str()), Some("realm"));
+        assert_eq!(params.get("nonce").map(|s| s.as_str()), Some(nonce.as_str()));
     }
 
     #[test]
@@ -475,8 +478,9 @@ mod tests {
         }
 
         // 6. Test Invalid Nonce
+        let wrong_nonce = generate_nonce();
         let valid_nonce_bad =
-            verify_authentication(&auth_params, method, uri, &public_key, "wrong_nonce", false).unwrap();
+            verify_authentication(&auth_params, method, uri, &public_key, &wrong_nonce, false).unwrap();
         assert!(!valid_nonce_bad, "Wrong nonce should fail verification");
     }
 

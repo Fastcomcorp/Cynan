@@ -545,16 +545,16 @@ mod tests {
     #[test]
     fn test_pqc_auth_signature_generation() {
         let keypair = MlDsaKeyPair::generate().expect("Keypair generation failed");
-        let nonce = "abc123nonce";
+        let nonce = uuid::Uuid::new_v4().to_string();
         let method = "REGISTER";
         let uri = "sip:user@example.com";
 
         // Generate signature
-        let signature = compute_pqc_auth_signature(&keypair, nonce, method, uri)
+        let signature = compute_pqc_auth_signature(&keypair, &nonce, method, uri)
             .expect("Signature generation failed");
 
         // Verify signature
-        let valid = verify_pqc_auth_signature(&keypair.public_key, nonce, method, uri, &signature)
+        let valid = verify_pqc_auth_signature(&keypair.public_key, &nonce, method, uri, &signature)
             .expect("Verification failed");
 
         assert!(valid);
@@ -563,21 +563,22 @@ mod tests {
     #[test]
     fn test_pqc_auth_signature_verification() {
         let keypair = MlDsaKeyPair::generate().expect("Keypair generation failed");
-        let nonce = "test_nonce_12345";
+        let nonce = uuid::Uuid::new_v4().to_string();
         let method = "INVITE";
         let uri = "sip:callee@domain.com";
 
-        let signature = compute_pqc_auth_signature(&keypair, nonce, method, uri)
+        let signature = compute_pqc_auth_signature(&keypair, &nonce, method, uri)
             .expect("Signature generation failed");
 
         // Verify with correct data
-        let valid = verify_pqc_auth_signature(&keypair.public_key, nonce, method, uri, &signature)
+        let valid = verify_pqc_auth_signature(&keypair.public_key, &nonce, method, uri, &signature)
             .expect("Verification failed");
         assert!(valid);
 
         // Verify with wrong nonce
+        let wrong_nonce = uuid::Uuid::new_v4().to_string();
         let invalid =
-            verify_pqc_auth_signature(&keypair.public_key, "wrong_nonce", method, uri, &signature)
+            verify_pqc_auth_signature(&keypair.public_key, &wrong_nonce, method, uri, &signature)
                 .expect("Verification failed");
         assert!(!invalid);
     }

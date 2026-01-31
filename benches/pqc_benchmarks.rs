@@ -99,7 +99,8 @@ fn sip_auth_pqc_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("SIP PQC Authentication");
 
     let keypair = MlDsaKeyPair::generate().unwrap();
-    let nonce = "test-nonce-12345678";
+    let nonce_str = uuid::Uuid::new_v4().to_string();
+    let nonce = nonce_str.as_str();
     let method = "REGISTER";
     let uri = "sip:cynan.ims";
 
@@ -174,7 +175,8 @@ fn sip_auth_falcon_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("SIP Falcon-512 Authentication");
 
     let keypair = Falcon512KeyPair::generate().unwrap();
-    let nonce = "test-nonce-12345678";
+    let nonce_str = uuid::Uuid::new_v4().to_string();
+    let nonce = nonce_str.as_str();
     let method = "REGISTER";
     let uri = "sip:cynan.ims";
 

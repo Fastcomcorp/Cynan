@@ -120,8 +120,9 @@ fn test_sip_pqc_auth_tamper_detection() {
     let signature_hex = compute_pqc_response(&keypair, method, uri, &nonce).unwrap();
 
     // 1. Test wrong nonce
+    let wrong_nonce = generate_nonce();
     let mut params = HashMap::new();
-    params.insert("nonce".to_string(), "wrong-nonce".to_string());
+    params.insert("nonce".to_string(), wrong_nonce);
     params.insert("response".to_string(), signature_hex.clone());
 
     let result = verify_pqc_response(&params, method, uri, &public_key, &nonce).unwrap();
