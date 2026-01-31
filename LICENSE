@@ -1,26 +1,67 @@
-Cynan IMS Core - Proprietary License
+Cynan IMS Core - Hybrid License (Apache 2.0 / Commercial)
 
-Copyright 2026 Fastcomcorp, LLC. All Rights Reserved.
+Copyright 2026 Fastcomcorp, LLC. All rights reserved.
 
-This software and its associated documentation files (the "Software") are proprietary to Fastcomcorp, LLC. The Software is protected by copyright laws and international copyright treaties, as well as other intellectual property laws and treaties.
+This software is dual-licensed under the Apache License, Version 2.0 and a separate 
+Commercial License for commercial use, distribution, or deployment.
 
-PERMITTED USE:
-- Personal and educational use for learning, research, and development purposes
-- Evaluation and testing in non-production environments
-- Academic use in educational institutions for research and teaching
+---
 
-RESTRICTIONS:
-- Commercial use, distribution, or deployment requires a commercial license from Fastcomcorp, LLC
-- Redistribution in any form is prohibited without explicit written permission
-- Modification and creation of derivative works is prohibited without a commercial license
-- Reverse engineering, decompilation, or disassembly is strictly prohibited
+### THIRD-PARTY COMPONENTS
 
-COMMERCIAL LICENSING:
-For commercial use, enterprise deployment, or any production environment usage, please contact:
+Cynan IMS Core incorporates or references components from the following third-party 
+projects, which are subject to their respective licenses:
+
+- **Cryptography & Security**:
+  - fips203, fips204, and fn-dsa crates (Apache 2.0 / MIT)
+  - aws-lc-rs (Apache 2.0 / ISC - FIPS 140-3 validated)
+  - rustls, tokio-rustls, and ring (Apache 2.0 / MIT / BSD)
+- **Networking & Protocols**:
+  - tokio (MIT)
+  - tonic and prost (Apache 2.0)
+  - rsip (MIT)
+  - diameter (MIT)
+  - netlink-sys, netlink-packet-route, netlink-packet-xfrm (MIT / Apache 2.0)
+- **Data & Utilities**:
+  - sqlx (Apache 2.0 / MIT)
+  - serde, serde_json, serde_yaml (MIT / Apache 2.0)
+  - rhai (MIT / Apache 2.0)
+  - dashmap (MIT)
+  - log, env_logger, anyhow (MIT / Apache 2.0)
+
+The full text of the Apache License, Version 2.0 is included below for reference.
+
+---
+
+### PART 1: APACHE LICENSE, VERSION 2.0
+
+Personal, educational, and evaluation use are covered under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License at: http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the 
+License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, 
+either express or implied. See the License for the specific language governing permissions 
+and limitations under the License.
+
+---
+
+### PART 2: COMMERCIAL USE REQUIREMENTS
+
+Commercial use, distribution, or deployment of this software requires a separate 
+commercial license from Fastcomcorp, LLC. This includes but is not limited to:
+- Use in production telecommunications networks.
+- Distribution as part of a commercial product or service.
+- Use for generating revenue.
+
+For commercial licensing inquiries and to discuss customized **Enterprise Support** options, please contact:
 - Email: licensing@fastcomcorp.com
 - Website: https://fastcomcorp.com
 
-WARRANTY DISCLAIMER:
-THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL FASTCOMCORP, LLC BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+---
 
-For licensing inquiries or to obtain a commercial license, please contact Fastcomcorp, LLC at the information provided above.
+### WARRANTY DISCLAIMER
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, 
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
+PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL FASTCOMCORP, LLC BE 
+LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.

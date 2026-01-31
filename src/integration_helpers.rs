@@ -21,27 +21,43 @@
  * ---------------------------------------------------------------------------------
  */
 
-use std::sync::Arc;
+fn extract_domain(target: &str) -> Result<&str> {
+    // Remove protocol if present
+    let without_protocol = target
+        .strip_prefix("https://")
+        .or_else(|| target.strip_prefix("http://"))
+        .unwrap_or(target);
+    
+    // Split on colon to remove port
+    let domain = without_protocol
+        .split(':')
+        .next()
+        .ok_or_else(|| anyhow!("Invalid gRPC target format"))?;
+    
+    Ok(domain)
+}
 
-use async_trait::async_trait;
+#[cfg(test)]
+mod extract_domain_tests {
+    use super::*;
 
-use crate::{config::CynanConfig, core::routing::RouteHandler, state::SharedState};
+    #[test]
+    fn test_extract_domain_https() {
+        assert_eq!(extract_domain("https://armoricore.service:50051").unwrap(), "armoricore.service");
+    }
 
-/// Trait for IMS modules that participate in routing decisions
-///
-/// IMS modules implement both `RouteHandler` (for request processing) and
-/// `ImsModule` (for initialization and lifecycle management).
-#[async_trait]
-pub trait ImsModule: RouteHandler + Send + Sync {
-    /// Returns the module name for logging and identification
-    fn name(&self) -> &str;
+    #[test]
+    fn test_extract_domain_http() {
+        assert_eq!(extract_domain("http://localhost:8080").unwrap(), "localhost");
+    }
 
-    /// Returns a brief description of the module
-    fn description(&self) -> &str;
+    #[test]
+    fn test_extract_domain_no_protocol() {
+        assert_eq!(extract_domain("armoricore.internal:443").unwrap(), "armoricore.internal");
+    }
 
-    /// Initialize the module with configuration and shared state
-    ///
-    /// Called once during application startup to allow modules to set up
-    /// connections, load configuration, or perform other initialization tasks.
-    async fn init(&self, config: Arc<CynanConfig>, state: SharedState) -> anyhow::Result<()>;
+    #[test]
+    fn test_extract_domain_no_port() {
+        assert_eq!(extract_domain("https://armoricore.service").unwrap(), "armoricore.service");
+    }
 }

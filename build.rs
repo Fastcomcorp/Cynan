@@ -15,9 +15,7 @@
 use std::io::Result;
 
 fn main() -> Result<()> {
-    // TODO: Compile protobuf definitions for Armoricore integration
-    // Temporarily disabled due to build issues
-    // tonic_build::compile_protos("proto/media_engine.proto")?;
-    println!("cargo:warning=Protobuf compilation temporarily disabled");
+    // Compile protobuf definitions for Armoricore integration
+    tonic_build::compile_protos("proto/media_engine.proto")?;
     Ok(())
 }

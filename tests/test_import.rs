@@ -21,27 +21,7 @@
  * ---------------------------------------------------------------------------------
  */
 
-use std::sync::Arc;
-
-use async_trait::async_trait;
-
-use crate::{config::CynanConfig, core::routing::RouteHandler, state::SharedState};
-
-/// Trait for IMS modules that participate in routing decisions
-///
-/// IMS modules implement both `RouteHandler` (for request processing) and
-/// `ImsModule` (for initialization and lifecycle management).
-#[async_trait]
-pub trait ImsModule: RouteHandler + Send + Sync {
-    /// Returns the module name for logging and identification
-    fn name(&self) -> &str;
-
-    /// Returns a brief description of the module
-    fn description(&self) -> &str;
-
-    /// Initialize the module with configuration and shared state
-    ///
-    /// Called once during application startup to allow modules to set up
-    /// connections, load configuration, or perform other initialization tasks.
-    async fn init(&self, config: Arc<CynanConfig>, state: SharedState) -> anyhow::Result<()>;
+#[test]
+fn test_discovery() {
+    // This is just to see what's available
 }
