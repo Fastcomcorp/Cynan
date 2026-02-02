@@ -48,8 +48,13 @@ impl SharedState {
             inner: Arc::new(State {
                 user_locations: DashMap::new(),
                 database,
+                metrics: Arc::new(crate::metrics::Metrics::new()),
             }),
         })
+    }
+
+    pub fn metrics(&self) -> Arc<crate::metrics::Metrics> {
+        self.inner.metrics.clone()
     }
 
     pub fn insert_location(&self, user: Uuid, contact: Location) {
@@ -71,12 +76,17 @@ impl SharedState {
             .expect("Database pool not initialized (mock mode?)")
     }
 
+    pub fn has_active_pool(&self) -> bool {
+        self.inner.database.pool.is_some()
+    }
+
     /// Create a mock shared state for testing (no real DB connection)
     pub fn mock() -> Self {
         SharedState {
             inner: Arc::new(State {
                 user_locations: DashMap::new(),
                 database: DatabaseLayer { pool: None },
+                metrics: Arc::new(crate::metrics::Metrics::new()),
             }),
         }
     }
@@ -85,6 +95,7 @@ impl SharedState {
 pub struct State {
     user_locations: DashMap<Uuid, Location>,
     database: DatabaseLayer,
+    metrics: Arc<crate::metrics::Metrics>,
 }
 
 /// Encapsulates the async SQLx connection pool for HSS/PCRF interactions.

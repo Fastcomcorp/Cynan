@@ -1,6 +1,6 @@
 # 🦅 Cynan IMS Core
 
-[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=for-the-badge)]()
+[![Version](https://img.shields.io/badge/Version-0.8.5-blue.svg?style=for-the-badge)]()
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20Commercial-blue.svg?style=for-the-badge)]()
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/Status-Development-orange.svg?style=for-the-badge)]()
@@ -78,6 +78,7 @@ graph TB
     IBCF <-->|"Interconnect"| SBC
     SCSCF <--> AS
     SCSCF <--> ARM
+    SCSCF -.->|"O2 (REST)"| SMO["O-RAN SMO"]
 ```
 
 ---
@@ -100,9 +101,14 @@ graph TB
 *   **IPsec XFRM**: Native Linux kernel integration for Gm interface security.
 *   **Diameter Pipeline**: Comprehensive Cx, Sh, and Rx interfaces for HSS connectivity.
 
+### ☁️ O-RAN & Cloud-Native
+*   **O2 Interface**: REST API for O-Cloud resource management and SMO orchestration (Discovery, Registration, Alarms).
+*   **CUPS Architecture**: Complete Control & User Plane Separation with gRPC-based media control.
+*   **CNF Ready**: Fully containerized (Docker/distroless) with specialized Helm charts for Kubernetes deployment.
+
 ---
 
-## 📊 Implementation Status (v0.8.0)
+## 📊 Implementation Status (v0.8.5)
 
 | Category | Component | Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -113,6 +119,8 @@ graph TB
 | **Integration** | Diameter | ✅ | Full Cx, Sh, and Rx interface implementations. |
 | | Armoricore | ✅ | Secure gRPC bridge for media engine control. |
 | | Media Plane | ✅ | RTP Parsing complete; Routing logic active via gRPC bridge. |
+| **Infrastructure** | Cloud-Native | ✅ | Dockerized (Distroless) & Helm Charts ready. |
+| | O-RAN O2 | ✅ | O2-IMS REST API for SMO Registration/Discovery. |
 
 ---
 
@@ -141,9 +149,9 @@ Cynan is engineered for high-performance execution on modern hardware. For carri
 *   **Network**: 1Gbps Ethernet minimum; 10Gbps recommended for IBCF interconnects.
 
 ### Software Requirements
-*   **Operating System**: Linux (Kernel 5.15+ required for native IPsec XFRM support).
+*   **Operating System**: Linux (Kernel 5.15+ for IPsec) or Kubernetes (for Helm deployment).
 *   **Database**: PostgreSQL 15.0+ (HSS/Subscriber storage).
-*   **Dependencies**: `libssl-dev`, `pkg-config` (for Rust cryptographic bindings).
+*   **Dependencies**: `docker`, `helm` (for cloud-native) OR `libssl-dev`, `pkg-config` (for bare metal).
 
 ---
 

@@ -91,3 +91,36 @@ async fn test_diameter_pqc_roundtrip() {
 
     hss_handle.await.unwrap();
 }
+
+#[tokio::test]
+async fn test_diameter_sh_hardening() {
+    // 1. Setup message with unauthorized mandatory AVP
+    let mut msg = DiameterMessage::new(
+        commands::USER_DATA,
+        applications::DIAMETER_3GPP_SH,
+        0,
+    );
+    msg.add_avp(Avp::new(avp_codes::SESSION_ID, 0, b"sess".to_vec()));
+    // Add an AVP that is M-bit set but NOT in whitelist for Sh-Query
+    msg.add_avp(Avp::new(999, 0x40, b"unauthorized".to_vec()));
+
+    // 2. Validate against Sh whitelist
+    let allowed_avps = vec![avp_codes::RESULT_CODE, avp_codes::SESSION_ID, avp_codes::USER_DATA];
+    let result = msg.validate_whitelist(&allowed_avps);
+    
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Unauthorized mandatory AVP"));
+
+    // 3. Test integrity verification
+    let mut msg2 = DiameterMessage::new(commands::USER_DATA, applications::DIAMETER_3GPP_SH, 0);
+    let user_data = b"<xml>profile</xml>".to_vec();
+    msg2.add_avp(Avp::new(avp_codes::USER_DATA, 0, user_data.clone()));
+    
+    let keypair = MlDsaKeyPair::generate().unwrap();
+    let signature = keypair.sign(&user_data).unwrap();
+    msg2.add_avp(Avp::new(avp_codes::PQC_SIGNATURE, 0, signature));
+
+    let pk_bytes = keypair.public_key_bytes();
+    let integrity_result = msg2.verify_integrity(&pk_bytes).unwrap();
+    assert!(integrity_result);
+}

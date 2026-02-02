@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.8.5
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -36,8 +36,11 @@ pub mod pqc_primitives; // Post-quantum cryptography primitives
 pub mod rtp_router;
 pub mod sip_arcrtc;
 pub mod slf;
+pub mod sbc_integration;
 pub mod state;
 pub mod tls_config;
+pub mod user_plane;
+pub mod cynan_o_ran;
 
 use anyhow::Context;
 use clap::Parser;
@@ -72,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
    ╚██████╗   ██║   ██║ ╚████║██║  ██║██║ ╚████║
     ╚═════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝
     
-    Fastcomcorp Cynan IMS Core v0.8.0-final
+    Fastcomcorp Cynan IMS Core v0.8.5
     Post-Quantum Secure | Carrier-Grade Hardened
     
     "#);

@@ -35,6 +35,7 @@ use rsip::{Method, Request, Response};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 use crate::modules::traits::ImsModule;
 
@@ -164,6 +165,8 @@ pub struct MgcfModule {
     local_domain: String,
     /// PSTN trunk configuration
     pstn_trunks: Arc<std::sync::RwLock<Vec<PstnTrunk>>>,
+    /// SBC integration client
+    sbc_client: Arc<RwLock<Option<Arc<crate::sbc_integration::SbcClient>>>>,
 }
 
 /// PSTN trunk configuration
@@ -183,7 +186,14 @@ impl MgcfModule {
             media_gateway: Arc::new(MockMediaGateway::new()),
             local_domain,
             pstn_trunks: Arc::new(std::sync::RwLock::new(Self::default_trunks())),
+            sbc_client: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set SBC client for configuration synchronization
+    pub fn with_sbc_client(mut self, client: Arc<crate::sbc_integration::SbcClient>) -> Self {
+        self.sbc_client = Arc::new(RwLock::new(Some(client)));
+        self
     }
 
     /// Create default PSTN trunk configuration
@@ -464,11 +474,37 @@ impl ImsModule for MgcfModule {
     ) -> Result<()> {
         info!("Initializing MGCF module for domain: {}", self.local_domain);
 
-        // Load PSTN trunks from config if available
         if let Some(mgcf_config) = &config.mgcf {
             let mut trunks = self.pstn_trunks.write().unwrap();
             *trunks = mgcf_config.pstn_trunks.clone();
             info!("MGCF loaded {} PSTN trunks", trunks.len());
+
+            // Push to SBC if client is available
+            if let Some(client) = self.sbc_client.read().unwrap().as_ref() {
+                let client_clone = Arc::clone(client);
+                let trunks_clone = trunks.clone();
+                tokio::spawn(async move {
+                    for trunk in trunks_clone {
+                        let sbc_trunk = crate::sbc_integration::Trunk {
+                            id: Uuid::new_v4(),
+                            name: trunk.name.clone(),
+                            ip: "127.0.0.1".into(), // Default to local if not specified
+                            port: 5060,
+                            transport: crate::sbc_integration::TransportProtocol::UDP,
+                            codec: crate::sbc_integration::AudioCodec::PCMU,
+                            auth_user: None,
+                            auth_pass: None,
+                            use_pai: true,
+                            use_rpid: false,
+                            use_diversion: true,
+                            use_privacy: false,
+                        };
+                        if let Err(e) = client_clone.push_trunk(&sbc_trunk).await {
+                            error!("Failed to push MGCF trunk {} to SBC: {}", trunk.name, e);
+                        }
+                    }
+                });
+            }
         }
 
         Ok(())

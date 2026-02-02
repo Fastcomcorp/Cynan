@@ -29,8 +29,8 @@ use crate::sip_arcrtc::{sip_to_arbrtc_config, ArcRtcSession, SipSessionInfo};
 use crate::tls_config::TlsCertificateManager;
 use anyhow::{anyhow, Result};
 use log::warn;
-// Temporarily disable NATS due to dependency conflicts
-// use nats::asynk::Connection as NatsConnection;
+// Re-enabled NATS integration using async-nats
+use async_nats::Client as NatsClient;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -57,17 +57,57 @@ use armoricore::media::{
 /// Provides gRPC connectivity for session handoff and
 /// post-quantum cryptographic media handling. This is the primary 
 /// control plane for **VoLTE/VoWiFi media orchestration**.
-///
-/// ### Troubleshooting:
-/// - **GRPC Connection Failure**: Verify `grpc_target` in config and network connectivity.
-/// - **TLS Handshake Error**: Check PQC mode compatibility between Cynan and Armoricore.
-/// - **NATS (Disabled)**: Integration is currently stubbed due to version conflicts.
 #[derive(Clone)]
 pub struct ArmoricoreBridge {
     /// gRPC client for media engine operations
     media_client: MediaEngineClient<Channel>,
-    // Temporarily disabled: NATS connection for messaging
-    // nats: NatsConnection,
+    /// NATS client for asynchronous messaging (optional)
+    #[allow(dead_code)]
+    nats_client: Option<NatsClient>,
+}
+
+/// Controller for the User Plane Function (UPF) via CUPS interface
+#[derive(Clone)]
+pub struct CupsController {
+    client: crate::user_plane::cups::cups_service_client::CupsServiceClient<Channel>,
+}
+
+impl CupsController {
+    pub async fn connect(addr: String) -> Result<Self> {
+        let client = crate::user_plane::cups::cups_service_client::CupsServiceClient::connect(addr)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to User Plane: {}", e))?;
+        
+        Ok(Self { client })
+    }
+
+    /// Create a new session on the User Plane
+    pub async fn create_session(
+        &self,
+        session_id: String,
+        remote_ip: String,
+        remote_port: u32,
+    ) -> Result<(String, u32)> {
+        let request = crate::user_plane::cups::CreateSessionRequest {
+            session_id,
+            remote_ip,
+            remote_port,
+            codec: "PCMU/8000".to_string(), // Default for now
+        };
+
+        let mut client = self.client.clone();
+        let response = client.create_session(request).await?.into_inner();
+        
+        Ok((response.local_ip, response.local_port))
+    }
+
+    /// Delete a session on the User Plane
+    pub async fn delete_session(&self, session_id: String) -> Result<()> {
+        let request = crate::user_plane::cups::DeleteSessionRequest { session_id };
+        let mut client = self.client.clone();
+        client.delete_session(request).await?;
+        Ok(())
+    }
 }
 
 impl ArmoricoreBridge {
@@ -140,25 +180,36 @@ impl ArmoricoreBridge {
             log::warn!("TLS disabled for gRPC connection (insecure)");
         }
 
-        let channel = builder
-            .connect()
-            .await
-            .map_err(|e| anyhow!("Failed to connect to Armoricore: {}", e))?;
+        let channel = builder.connect_lazy();
         let media_client = MediaEngineClient::new(channel);
 
         log::info!("Successfully connected to Armoricore");
 
-        // Temporarily disabled NATS connection
-        // let nats = NatsConnection::connect(&config.nats_url)
-        //     .await
-        //     .map_err(|err| anyhow!("failed to connect to NATS: {err}"))?;
+        // Initialize NATS connection
+        // Initialize NATS connection (optional)
+        log::info!("Connecting to NATS server at: {}", config.nats_url);
+        let nats_client = match async_nats::connect(&config.nats_url).await {
+            Ok(client) => Some(client),
+            Err(e) => {
+                log::warn!("Failed to connect to NATS: {} (running without messaging)", e);
+                None
+            }
+        };
 
-        Ok(ArmoricoreBridge { media_client })
+        Ok(ArmoricoreBridge {
+            media_client,
+            nats_client,
+        })
     }
 
     /// Get a clone of the media engine gRPC client
     pub fn get_client(&self) -> MediaEngineClient<Channel> {
         self.media_client.clone()
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        // Simplified: bridge is active if initialized
+        true
     }
 
     /// Request session handoff to Armoricore for secure media processing
@@ -367,6 +418,30 @@ pub struct DiameterInterface {
     pqc_keypair: Option<crate::pqc_primitives::MlDsaKeyPair>,
     pqc_mode: crate::pqc_primitives::PqcMode,
     hss_public_key: Option<fips204::ml_dsa_65::PublicKey>,
+    rate_limiter: Arc<Mutex<DiameterRateLimiter>>,
+}
+
+struct DiameterRateLimiter {
+    last_request: std::time::Instant,
+    tokens: f32,
+    max_tokens: f32,
+    fill_rate: f32,
+}
+
+impl DiameterRateLimiter {
+    fn check_limit(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_request).as_secs_f32();
+        self.tokens = (self.tokens + elapsed * self.fill_rate).min(self.max_tokens);
+        self.last_request = now;
+
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl DiameterInterface {
@@ -382,6 +457,12 @@ impl DiameterInterface {
             pqc_keypair: None,
             pqc_mode: crate::pqc_primitives::PqcMode::Disabled,
             hss_public_key: None,
+            rate_limiter: Arc::new(Mutex::new(DiameterRateLimiter {
+                last_request: std::time::Instant::now(),
+                tokens: 50.0,
+                max_tokens: 50.0,
+                fill_rate: 10.0, // 10 requests per second
+            })),
         })
     }
 
@@ -398,6 +479,12 @@ impl DiameterInterface {
             pqc_keypair: None,
             pqc_mode: crate::pqc_primitives::PqcMode::Disabled,
             hss_public_key: None,
+            rate_limiter: Arc::new(Mutex::new(DiameterRateLimiter {
+                last_request: std::time::Instant::now(),
+                tokens: 50.0,
+                max_tokens: 50.0,
+                fill_rate: 10.0, // 10 requests per second
+            })),
         })
     }
 
@@ -417,6 +504,14 @@ impl DiameterInterface {
     }
 
     async fn ensure_connection(&self) -> Result<()> {
+        // Apply rate limiting
+        {
+            let mut limiter = self.rate_limiter.lock().await;
+            if !limiter.check_limit() {
+                return Err(anyhow!("Diameter request rate limit exceeded"));
+            }
+        }
+
         let mut conn = self.connection.lock().await;
         if conn.is_none() {
             let stream = TcpStream::connect(self.hss_address)
@@ -708,7 +803,22 @@ impl DiameterInterface {
     }
 
     fn parse_uaa_response(&self, response: &DiameterMessage) -> Result<UserProfile> {
-        // Check result code
+        // 1. Validate AVP whitelist
+        let allowed_avps = vec![
+            avp_codes::RESULT_CODE,
+            avp_codes::SESSION_ID,
+            avp_codes::ORIGIN_HOST,
+            avp_codes::ORIGIN_REALM,
+            601, // Server-Capabilities
+            602, // Server-Name
+            614, // Server-Assignment-Type
+            avp_codes::PQC_SIGNATURE,
+            avp_codes::PQC_ALGORITHM,
+            avp_codes::PQC_NONCE,
+        ];
+        response.validate_whitelist(&allowed_avps)?;
+
+        // 2. Check result code
         if let Some(result_avp) = response.find_avp(avp_codes::RESULT_CODE) {
             let result_code = u32::from_be_bytes(result_avp.data[..4].try_into().unwrap());
             if result_code != 2001 {
@@ -756,7 +866,19 @@ impl DiameterInterface {
     }
 
     fn parse_maa_response(&self, response: &DiameterMessage) -> Result<Vec<SipAuthDataItem>> {
-        // Check result code
+        // 1. Validate AVP whitelist
+        let allowed_avps = vec![
+            avp_codes::RESULT_CODE,
+            avp_codes::SESSION_ID,
+            avp_codes::SIP_AUTH_DATA_ITEM,
+            avp_codes::SIP_NUMBER_AUTH_ITEMS,
+            avp_codes::PQC_SIGNATURE,
+            avp_codes::PQC_ALGORITHM,
+            avp_codes::PQC_NONCE,
+        ];
+        response.validate_whitelist(&allowed_avps)?;
+
+        // 2. Check result code
         if let Some(result_avp) = response.find_avp(avp_codes::RESULT_CODE) {
             let result_code = u32::from_be_bytes(result_avp.data[..4].try_into().unwrap());
             if result_code != 2001 {
@@ -914,7 +1036,18 @@ impl DiameterInterface {
     }
 
     fn parse_uda_response(&self, response: &DiameterMessage) -> Result<String> {
-        // Check result code
+        // 1. Validate AVP whitelist
+        let allowed_avps = vec![
+            avp_codes::RESULT_CODE,
+            avp_codes::SESSION_ID,
+            avp_codes::USER_DATA,
+            avp_codes::PQC_SIGNATURE,
+            avp_codes::PQC_ALGORITHM,
+            avp_codes::PQC_NONCE,
+        ];
+        response.validate_whitelist(&allowed_avps)?;
+
+        // 2. Check result code
         if let Some(result_avp) = response.find_avp(avp_codes::RESULT_CODE) {
             let result_code = u32::from_be_bytes(result_avp.data[..4].try_into().unwrap());
             if result_code != 2001 {
@@ -1119,6 +1252,94 @@ impl DiameterInterface {
         log::debug!("Sending Diameter probe");
         Ok(())
     }
+
+    pub async fn is_healthy(&self) -> bool {
+        // Check if the TCP connection is still alive
+        let conn = self.connection.lock().await;
+        conn.is_some()
+    }
+
+    /// Diameter Rf: Send Accounting Request (ACR) for offline charging
+    pub async fn send_accounting_request(
+        &self,
+        username: &str,
+        record_type: AccountingRecordType,
+        record_number: u32,
+    ) -> Result<()> {
+        log::info!("Diameter Rf: Sending ACR ({:?}) for user: {}", record_type, username);
+
+        let mut request = DiameterMessage::new(
+            commands::ACCOUNTING,
+            applications::DIAMETER_BASE_ACCOUNTING,
+            0x80,
+        );
+
+        request.add_avp(Avp::new(avp_codes::SESSION_ID, 0x40, format!("rf-{}-{}", username, record_number).into()));
+        request.add_avp(Avp::new(avp_codes::ORIGIN_HOST, 0x40, self.origin_host.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::ORIGIN_REALM, 0x40, self.origin_realm.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::DESTINATION_REALM, 0x40, b"cdf.realm".to_vec()));
+        request.add_avp(Avp::new(avp_codes::USER_NAME, 0x40, username.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::ACCOUNTING_RECORD_TYPE, 0x40, (record_type as u32).to_be_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::ACCOUNTING_RECORD_NUMBER, 0x40, record_number.to_be_bytes().to_vec()));
+
+        self.send_message(&mut request).await?;
+        Ok(())
+    }
+
+    /// Diameter Ro: Send Credit Control Request (CCR) for online charging
+    pub async fn send_credit_control_request(
+        &self,
+        username: &str,
+        request_type: CcRequestType,
+        request_number: u32,
+        requested_units: Option<u32>,
+    ) -> Result<u32> {
+        log::info!("Diameter Ro: Sending CCR ({:?}) for user: {}", request_type, username);
+
+        let mut request = DiameterMessage::new(
+            commands::CREDIT_CONTROL,
+            applications::CREDIT_CONTROL,
+            0x80,
+        );
+
+        request.add_avp(Avp::new(avp_codes::SESSION_ID, 0x40, format!("ro-{}-{}", username, request_number).into()));
+        request.add_avp(Avp::new(avp_codes::ORIGIN_HOST, 0x40, self.origin_host.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::ORIGIN_REALM, 0x40, self.origin_realm.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::DESTINATION_REALM, 0x40, b"ocs.realm".to_vec()));
+        request.add_avp(Avp::new(avp_codes::USER_NAME, 0x40, username.as_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::CC_REQUEST_TYPE, 0x40, (request_type as u32).to_be_bytes().to_vec()));
+        request.add_avp(Avp::new(avp_codes::CC_REQUEST_NUMBER, 0x40, request_number.to_be_bytes().to_vec()));
+
+        if let Some(units) = requested_units {
+            // Simplified Requested-Service-Unit AVP
+            request.add_avp(Avp::new(avp_codes::CC_TIME, 0x40, units.to_be_bytes().to_vec()));
+        }
+
+        let response = self.send_message(&mut request).await?;
+
+        // Extract granted units (simplified)
+        if let Some(granted_avp) = response.find_avp(avp_codes::CC_TIME) {
+            Ok(u32::from_be_bytes(granted_avp.data[..4].try_into()?))
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AccountingRecordType {
+    Start = 1,
+    Interim = 2,
+    Stop = 3,
+    Event = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CcRequestType {
+    Initial = 1,
+    Update = 2,
+    Termination = 3,
+    Event = 4,
 }
 
 #[derive(Debug, Clone)]

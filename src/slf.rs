@@ -350,16 +350,23 @@ impl ImsModule for SlfModule {
             }
         }
 
-        // TODO: Start cleanup task for expired mappings
-        // Currently disabled due to borrowing issues - needs Arc<Self> pattern
-        // let module_arc = Arc::new(self.clone());
-        // tokio::spawn(async move {
-        //     let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-        //     loop {
-        //         interval.tick().await;
-        //         // module_arc.cleanup_expired_mappings();
-        //     }
-        // });
+        // Start cleanup task for expired mappings
+        let state_clone = self.state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600)); // Every hour
+            loop {
+                interval.tick().await;
+                let mut state = state_clone.write().unwrap();
+                let now = std::time::SystemTime::now();
+                state.subscriber_mappings.retain(|_, mapping| {
+                    match mapping.expires_at {
+                        Some(expiry) => expiry > now,
+                        None => true,
+                    }
+                });
+                debug!("SLF mapping cleanup completed");
+            }
+        });
 
         Ok(())
     }
@@ -375,9 +382,23 @@ impl ImsModule for SlfModule {
 
 #[async_trait]
 impl crate::core::routing::RouteHandler for SlfModule {
-    async fn handle_request(&self, _req: Request, _ctx: RouteContext) -> Result<RouteAction> {
-        // SLF logic would go here
-        // For now just continue
+    async fn handle_request(&self, req: Request, _ctx: RouteContext) -> Result<RouteAction> {
+        // SLF logic: Intercept REGISTER and INVITE to ensure HSS resolution is available
+        if req.method == rsip::Method::Register || req.method == rsip::Method::Invite {
+            let req_str = format!("{}", req);
+            if let Ok(username) = crate::modules::auth::extract_user_from_request(&req_str) {
+                match self.resolve_hss(&username) {
+                    Ok(hss) => {
+                        debug!("SLF resolved HSS for {}: {} ({})", username, hss.id, hss.address);
+                        // In a real SLF, we might add a 3gpp header with the HSS address
+                        // or redirect. For now, we just ensure it's resolvable.
+                    }
+                    Err(e) => {
+                        info!("SLF could not resolve HSS for {}: {}", username, e);
+                    }
+                }
+            }
+        }
         Ok(RouteAction::Continue)
     }
 }

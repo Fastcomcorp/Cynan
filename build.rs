@@ -16,6 +16,8 @@ use std::io::Result;
 
 fn main() -> Result<()> {
     // Compile protobuf definitions for Armoricore integration
+    // Compile protobuf definitions for Armoricore integration and CUPS
     tonic_build::compile_protos("proto/media_engine.proto")?;
+    tonic_build::compile_protos("proto/cups.proto")?;
     Ok(())
 }

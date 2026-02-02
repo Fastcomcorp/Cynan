@@ -45,6 +45,8 @@ pub struct CynanConfig {
     pub ibcf: Option<IbcfConfig>,
     /// Application Server integration configuration (optional)
     pub as_integration: Option<AsIntegrationConfig>,
+    /// SBC integration configuration (optional)
+    pub sbc: Option<SbcConfig>,
     /// Security policy configuration
     #[serde(default)]
     pub security: SecurityConfig,
@@ -188,6 +190,15 @@ pub struct AsIntegrationConfig {
     pub default_as: Option<String>,
 }
 
+/// SBC integration configuration
+#[derive(Debug, serde::Deserialize, Clone)]
+pub struct SbcConfig {
+    /// REST API endpoint for the SBC (e.g., "http://localhost:8080")
+    pub api_url: String,
+    /// Optional API key for authentication
+    pub api_key: Option<String>,
+}
+
 use crate::pqc_primitives::PqcConfig;
 
 /// Security policy configuration
@@ -255,6 +266,7 @@ impl Default for CynanConfig {
             slf: None,
             ibcf: None,
             as_integration: None,
+            sbc: None,
             security: SecurityConfig::default(),
         }
     }

@@ -241,6 +241,33 @@ impl DiameterMessage {
     pub fn find_avp(&self, code: u32) -> Option<&Avp> {
         self.avps.iter().find(|avp| avp.code == code)
     }
+
+    /// Validate the message against a strict AVP whitelist for a specific command
+    pub fn validate_whitelist(&self, allowed_codes: &[u32]) -> Result<()> {
+        for avp in &self.avps {
+            if !allowed_codes.contains(&avp.code) && avp.flags & 0x40 != 0 {
+                // Return error if a mandatory (M-bit set) AVP is not in whitelist
+                return Err(anyhow!("Unauthorized mandatory AVP code: {}", avp.code));
+            }
+        }
+        Ok(())
+    }
+
+    /// Verify a quantum-safe signature over selected AVPs (e.g. User-Data)
+    pub fn verify_integrity(&self, public_key_bytes: &[u8]) -> Result<bool> {
+        use crate::pqc_primitives::MlDsaKeyPair;
+        
+        let user_data = self.find_avp(avp_codes::USER_DATA)
+            .ok_or_else(|| anyhow!("User-Data AVP missing for integrity check"))?;
+        
+        let signature_avp = self.find_avp(avp_codes::PQC_SIGNATURE)
+            .ok_or_else(|| anyhow!("PQC-Signature AVP missing"))?;
+
+        // In a real implementation, we might sign multiple AVPs + Session-ID
+        // For now, we sign User-Data to ensure profile integrity
+        let pk = MlDsaKeyPair::public_key_from_bytes(public_key_bytes)?;
+        MlDsaKeyPair::verify(&pk, &user_data.data, &signature_avp.data)
+    }
 }
 
 /// Diameter AVP codes (RFC 6733 + 3GPP extensions)
@@ -264,6 +291,25 @@ pub mod avp_codes {
     pub const PQC_PUBLIC_KEY: u32 = 1001;
     pub const PQC_NONCE: u32 = 1002;
     pub const PQC_ALGORITHM: u32 = 1003;
+
+    // Sh interface specific
+    pub const DATA_REFERENCE: u32 = 703;
+    pub const SUBSCRIPTION_INFO_SELECTION: u32 = 704;
+    pub const USER_IDENTITY: u32 = 700;
+    pub const SUPPORTED_FEATURES: u32 = 628;
+
+    // Rf/Ro (Charging) specific
+    pub const ACCOUNTING_RECORD_TYPE: u32 = 480;
+    pub const ACCOUNTING_RECORD_NUMBER: u32 = 485;
+    pub const CC_REQUEST_TYPE: u32 = 416;
+    pub const CC_REQUEST_NUMBER: u32 = 415;
+    pub const SUBSCRIPTION_ID: u32 = 443;
+    pub const SUBSCRIPTION_ID_TYPE: u32 = 450;
+    pub const SUBSCRIPTION_ID_DATA: u32 = 444;
+    pub const SERVICE_IDENTIFIER: u32 = 439;
+    pub const USED_SERVICE_UNIT: u32 = 446;
+    pub const CC_TIME: u32 = 420;
+    pub const CC_TOTAL_OCTETS: u32 = 421;
 }
 
 /// Diameter command codes
@@ -285,6 +331,10 @@ pub mod commands {
     pub const SUBSCRIBE_NOTIFICATIONS: u32 = 308;
     pub const PUSH_NOTIFICATION: u32 = 309;
 
+    // Rf/Ro commands
+    pub const ACCOUNTING: u32 = 271;
+    pub const CREDIT_CONTROL: u32 = 272;
+
     // Rx interface commands
     pub const AA: u32 = 265;
     pub const RE_AUTH: u32 = 258;
@@ -305,6 +355,7 @@ pub mod applications {
     pub const DIAMETER_3GPP_CX: u32 = 16777216;
     pub const DIAMETER_3GPP_SH: u32 = 16777217;
     pub const DIAMETER_3GPP_RX: u32 = 16777236;
+    pub const DIAMETER_CREDIT_CONTROL: u32 = 4;
 }
 
 #[cfg(test)]

@@ -138,6 +138,8 @@ fn test_ibcf_quantum_safe_topology_hiding_integration() {
         replacement: "public.core.ims".to_string(),
         hide_port: true,
         pseudonym_key: Some(qs_key),
+        encrypt_topology: false,
+        encryption_key: None,
     };
     ibcf.add_topology_rule(rule).unwrap();
 

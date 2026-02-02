@@ -112,7 +112,40 @@ pub struct IcsCfModule {
 ///
 /// Note: Session state is managed through the shared state system rather than
 /// per-module state to ensure consistency across all IMS components.
-pub struct ScsCfModule;
+pub struct ScsCfModule {
+    /// AS Integration Manager for service control (iFC)
+    as_manager: Arc<RwLock<Option<Arc<crate::as_integration::AsIntegrationManager>>>>,
+    /// Diameter interface for Rf/Ro charging
+    diameter: Arc<RwLock<Option<Arc<DiameterInterface>>>>,
+}
+
+impl ScsCfModule {
+    pub fn new() -> Self {
+        ScsCfModule {
+            as_manager: Arc::new(RwLock::new(None)),
+            diameter: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub fn with_as_manager(self, manager: Arc<crate::as_integration::AsIntegrationManager>) -> Self {
+        let mut lock = self.as_manager.write().unwrap();
+        *lock = Some(manager);
+        drop(lock);
+        self
+    }
+
+    pub fn with_diameter(self, diameter: Arc<DiameterInterface>) -> Self {
+        let mut lock = self.diameter.write().unwrap();
+        *lock = Some(diameter);
+        drop(lock);
+        self
+    }
+}
+impl Default for ScsCfModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl ImsModule for RegistrarModule {
@@ -172,18 +205,6 @@ impl ImsModule for IcsCfModule {
             *diameter_lock = Some(Arc::new(diameter));
         }
         Ok(())
-    }
-}
-
-impl ScsCfModule {
-    pub fn new() -> Self {
-        ScsCfModule
-    }
-}
-
-impl Default for ScsCfModule {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -532,50 +553,90 @@ impl crate::core::routing::RouteHandler for ScsCfModule {
         let call_id = extract_header(&req_str, "Call-ID")
             .unwrap_or_else(|| format!("call-{}", uuid::Uuid::new_v4()));
 
+        // S-CSCF Service Logic (iFC Processing)
+        let as_manager_opt = {
+            let lock = self.as_manager.read().unwrap();
+            lock.clone()
+        };
+
+        if let Some(as_manager) = as_manager_opt {
+            let method = req.method.to_string();
+            let uri = format!("{}", req.uri);
+            
+            // 1. Find matching service triggers (iFC)
+            let triggers = as_manager.find_matching_triggers(&method, &uri, None);
+            
+            if !triggers.is_empty() {
+                info!("S-CSCF found {} matching iFC triggers for {}", triggers.len(), method);
+                
+                let username = extract_user_from_request(&req_str).unwrap_or_default();
+                
+                for trigger in triggers {
+                    info!("Invoking AS service: {} for user {}", trigger.service_type.to_str(), username);
+                    
+                    let svc_req = crate::as_integration::AsServiceRequest {
+                        session_id: call_id.clone(),
+                        user_id: username.clone(),
+                        sip_dialog_id: Some(call_id.clone()),
+                        additional_data: None,
+                    };
+                    
+                    // 2. Invoke AS service
+                    match as_manager.invoke_as_service(trigger, &svc_req).await {
+                        Ok(resp) => {
+                            info!("AS service {} returned result: {:?}", trigger.service_type.to_str(), resp.result);
+                        }
+                        Err(e) => {
+                            warn!("Failed to invoke AS service {}: {}", trigger.service_type.to_str(), e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Diameter Interface for Charging (Rf/Ro)
+        let diameter_opt = {
+            let lock = self.diameter.read().unwrap();
+            lock.clone()
+        };
+
         match req.method {
             Method::Invite => {
                 info!("S-CSCF handling INVITE, Call-ID: {}", call_id);
-
-                // Extract user information for routing decisions
+                
                 let username = extract_user_from_request(&req_str).unwrap_or_default();
-
-                // Check if user is registered (simplified - in production this would query HSS)
-                // For now, assume users are registered and continue routing
-                info!(
-                    "Processing INVITE for user: {}, Call-ID: {}",
-                    username, call_id
-                );
-
-                // In a full S-CSCF implementation, this would:
-                // 1. Query HSS for user profile and service settings
-                // 2. Apply service logic and routing policies
-                // 3. Route to appropriate destination (PSTN breakout, other IMS domains, etc.)
-                // 4. Set up charging and QoS parameters
-
-                // For this MVP, we continue to let other modules handle the routing
-            }
-            Method::Ack => {
-                info!("ACK received for session, Call-ID: {}", call_id);
-                // Session state management is handled by higher-level components
-                // This module focuses on routing decisions
+                if let Some(diameter) = &diameter_opt {
+                    // 1. Ro - Online Charging (Initial)
+                    // Request 60 units (seconds) for the initial credit
+                    match diameter.send_credit_control_request(&username, crate::integration::CcRequestType::Initial, 1, Some(60)).await {
+                        Ok(granted) => info!("Ro: Granted {} units for user {}", granted, username),
+                        Err(e) => warn!("Ro: Credit request failed: {}", e),
+                    }
+                    
+                    // 2. Rf - Offline Charging (Start)
+                    match diameter.send_accounting_request(&username, crate::integration::AccountingRecordType::Start, 1).await {
+                        Ok(_) => info!("Rf: Accounting START sent for user {}", username),
+                        Err(e) => warn!("Rf: Accounting request failed: {}", e),
+                    }
+                }
             }
             Method::Bye => {
                 info!("BYE received for session termination, Call-ID: {}", call_id);
-                // Return 200 OK for BYE - session cleanup handled elsewhere
+                
+                let username = extract_user_from_request(&req_str).unwrap_or_default();
+                if let Some(diameter) = &diameter_opt {
+                    // 1. Ro - Online Charging (Termination)
+                    let _ = diameter.send_credit_control_request(&username, crate::integration::CcRequestType::Termination, 2, None).await;
+                    
+                    // 2. Rf - Offline Charging (Stop)
+                    let _ = diameter.send_accounting_request(&username, crate::integration::AccountingRecordType::Stop, 2).await;
+                }
+
                 return Ok(RouteAction::Respond(Response::try_from(
                     b"SIP/2.0 200 OK\r\n\r\n".as_ref(),
                 )?));
             }
-            Method::Cancel => {
-                info!("CANCEL received for session, Call-ID: {}", call_id);
-                // Return 200 OK for CANCEL
-                return Ok(RouteAction::Respond(Response::try_from(
-                    b"SIP/2.0 200 OK\r\n\r\n".as_ref(),
-                )?));
-            }
-            _ => {
-                // Other methods pass through
-            }
+            _ => {}
         }
 
         Ok(RouteAction::Continue)

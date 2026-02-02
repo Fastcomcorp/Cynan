@@ -49,6 +49,8 @@ pub enum RouteAction {
     Continue,
     /// Send a SIP response and stop processing
     Respond(Response),
+    /// Forward the (possibly modified) request to the next handler
+    Forward(Request),
     /// Reject the request and stop processing
     RejectAny,
 }

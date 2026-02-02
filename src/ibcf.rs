@@ -29,15 +29,25 @@ use crate::core::{
 use crate::modules::auth::extract_header;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use regex;
 use rsip::Request;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 use crate::modules::traits::ImsModule;
 use zeroize::ZeroizeOnDrop;
+
+/// Helper for ring NonceSequence used in AES-GCM encryption
+struct OneNonceSequence(Option<ring::aead::Nonce>);
+
+impl ring::aead::NonceSequence for OneNonceSequence {
+    fn advance(&mut self) -> Result<ring::aead::Nonce, ring::error::Unspecified> {
+        self.0.take().ok_or(ring::error::Unspecified)
+    }
+}
 
 /// Trusted peer configuration
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -102,6 +112,12 @@ pub struct TopologyHidingRule {
     pub hide_port: bool,
     /// Key for quantum-safe pseudonymization (HKDF-SHA256)
     pub pseudonym_key: Option<[u8; 32]>,
+    /// Whether to use AES-GCM encryption for topology components
+    #[zeroize(skip)]
+    pub encrypt_topology: bool,
+    /// Symmetric key for topology encryption (AES-256-GCM)
+    #[serde(skip)]
+    pub encryption_key: Option<[u8; 32]>,
 }
 
 /// IBCF (Interconnection Border Control Function) Module
@@ -111,6 +127,7 @@ pub struct TopologyHidingRule {
 pub struct IbcfModule {
     local_domain: String,
     state: Arc<RwLock<IbcfState>>,
+    sbc_client: Arc<RwLock<Option<Arc<crate::sbc_integration::SbcClient>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +140,10 @@ struct IbcfState {
     rate_tracking: HashMap<String, u32>,
     /// Rate limit window (seconds)
     rate_window: u64,
+    /// Call-ID tokenization mapping (Internal -> External)
+    call_id_mappings: HashMap<String, String>,
+    /// Reverse Call-ID mapping (External -> Internal)
+    rev_call_id_mappings: HashMap<String, String>,
 }
 
 impl IbcfModule {
@@ -136,8 +157,17 @@ impl IbcfModule {
                 routing_table: HashMap::new(),
                 rate_tracking: HashMap::new(),
                 rate_window: 60, // 1 minute window
+                call_id_mappings: HashMap::new(),
+                rev_call_id_mappings: HashMap::new(),
             })),
+            sbc_client: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// Set SBC client for configuration synchronization
+    pub fn with_sbc_client(mut self, client: Arc<crate::sbc_integration::SbcClient>) -> Self {
+        self.sbc_client = Arc::new(RwLock::new(Some(client)));
+        self
     }
 
     /// Initialize default trusted peers
@@ -187,6 +217,8 @@ impl IbcfModule {
             replacement: "border.cynan.ims".to_string(),
             hide_port: true,
             pseudonym_key: None,
+            encrypt_topology: false,
+            encryption_key: None,
         });
         topology_rules
     }
@@ -322,10 +354,14 @@ impl IbcfModule {
 
     /// Apply topology hiding to SIP headers
     pub fn apply_topology_hiding(&self, req: &mut Request) -> Result<()> {
-        let headers_to_check = vec!["From", "To", "Contact", "Record-Route", "Route"];
+        let headers_to_check = vec!["From", "To", "Contact", "Record-Route", "Route", "Path"];
         let mut raw_req = req.to_string();
-        let mut modified = false;
+        
+        // 1. Scrub sensitive headers
+        self.scrub_headers(&mut raw_req);
 
+        // 2. Apply topology rules to common headers
+        let mut modified = false;
         for header_name in headers_to_check {
             if let Some(header_value) = extract_header(&raw_req, header_name) {
                 let modified_value = self.apply_topology_rules(&header_value);
@@ -345,13 +381,24 @@ impl IbcfModule {
 
                     if h_found {
                         raw_req = lines.join("\r\n");
-                        // Ensure SIP trailing CRLFs are preserved
-                        if !raw_req.ends_with("\r\n\r\n") {
-                            raw_req.push_str("\r\n\r\n");
-                        }
                         modified = true;
                     }
                 }
+            }
+        }
+
+        // 3. Tokenize Call-ID
+        if let Some(call_id) = extract_header(&raw_req, "Call-ID") {
+            let tokenized_id = self.tokenize_call_id(&call_id);
+            if tokenized_id != call_id {
+                let mut lines: Vec<String> = raw_req.lines().map(|s| s.to_string()).collect();
+                for line in lines.iter_mut() {
+                    if line.to_lowercase().starts_with("call-id:") {
+                        *line = format!("Call-ID: {}", tokenized_id);
+                    }
+                }
+                raw_req = lines.join("\r\n");
+                modified = true;
             }
         }
 
@@ -376,7 +423,21 @@ impl IbcfModule {
 
         for rule in &state.topology_rules {
             if self.matches_pattern(&result, &rule.source_pattern) {
-                // Use quantum-safe pseudonymization if key is provided
+                // 1. Use AES-GCM encryption if enabled
+                if rule.encrypt_topology {
+                    if let Some(key) = rule.encryption_key {
+                        match self.encrypt_topology_component(&key, &result) {
+                            Ok(encrypted) => {
+                                result = encrypted;
+                                debug!("IBCF encrypted topology component for rule: {}", rule.name);
+                                break;
+                            }
+                            Err(e) => warn!("IBCF failed to encrypt topology component: {}", e),
+                        }
+                    }
+                }
+
+                // 2. Use quantum-safe pseudonymization if key is provided
                 if let Some(key) = rule.pseudonym_key {
                     if let Some(at_pos) = result.find('@') {
                         let user_part = &result[..at_pos];
@@ -417,6 +478,87 @@ impl IbcfModule {
         let s_key = hmac::Key::new(hmac::HMAC_SHA256, key);
         let tag = hmac::sign(&s_key, input.as_bytes());
         hex::encode(&tag.as_ref()[..16]) // Use first 128 bits for pseudonym
+    }
+
+
+    /// Encrypt a topology component (e.g. URI) using AES-256-GCM
+    fn encrypt_topology_component(&self, key: &[u8; 32], data: &str) -> Result<String> {
+        use ring::aead::{self, BoundKey, SealingKey};
+        
+        // 1. Setup AEAD key
+        let unbound_key = aead::UnboundKey::new(&aead::AES_256_GCM, key)
+            .map_err(|_| anyhow!("Failed to create encryption key"))?;
+            
+        // 2. Generate random nonce
+        let mut nonce_bytes = [0u8; 12];
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = aead::Nonce::assume_unique_for_key(nonce_bytes);
+        
+        // 3. Encrypt data
+        let mut in_out = data.as_bytes().to_vec();
+        
+        let mut sealing_key = SealingKey::new(unbound_key, OneNonceSequence(Some(nonce)));
+        
+        sealing_key.seal_in_place_append_tag(aead::Aad::empty(), &mut in_out)
+            .map_err(|_| anyhow!("Encryption failed"))?;
+            
+        // 4. Result: nonce + encrypted_data + tag
+        let mut result = nonce_bytes.to_vec();
+        result.extend(in_out);
+        
+        Ok(format!("ep-{}", hex::encode(result)))
+    }
+
+    /// Tokenize Call-ID to hide internal session identifiers
+    pub fn tokenize_call_id(&self, internal_call_id: &str) -> String {
+        let mut state = self.state.write().unwrap();
+        if let Some(external_id) = state.call_id_mappings.get(internal_call_id) {
+            return external_id.clone();
+        }
+
+        let external_id = format!("ext-{}", Uuid::new_v4());
+        state.call_id_mappings.insert(internal_call_id.to_string(), external_id.clone());
+        state.rev_call_id_mappings.insert(external_id.clone(), internal_call_id.to_string());
+        
+        debug!("IBCF tokenized Call-ID: {} -> {}", internal_call_id, external_id);
+        external_id
+    }
+
+    /// De-tokenize Call-ID for inbound traffic from external peers
+    pub fn detokenize_call_id(&self, external_call_id: &str) -> String {
+        let state = self.state.read().unwrap();
+        state.rev_call_id_mappings.get(external_call_id).cloned().unwrap_or_else(|| external_call_id.to_string())
+    }
+
+    /// Remove sensitive headers that reveal vendor or internal topology
+    pub fn scrub_headers(&self, req_str: &mut String) {
+        let headers_to_scrub = vec![
+            "User-Agent",
+            "Server",
+            "X-Asterisk-",
+            "X-FreeSWITCH-",
+            "X-Cisco-",
+            "X-Nokia-",
+            "Organization",
+        ];
+
+        let mut lines: Vec<String> = req_str.lines().map(|s| s.to_string()).collect();
+        lines.retain(|line| {
+            let line_lower = line.to_lowercase();
+            !headers_to_scrub.iter().any(|&header| {
+                if header.ends_with('-') {
+                    line_lower.starts_with(&header.to_lowercase())
+                } else {
+                    line_lower.starts_with(&format!("{}:", header).to_lowercase())
+                }
+            })
+        });
+
+        *req_str = lines.join("\r\n");
+        if !req_str.ends_with("\r\n\r\n") {
+            req_str.push_str("\r\n\r\n");
+        }
     }
 
     /// Extract domain from SIP URI
@@ -473,7 +615,27 @@ impl IbcfModule {
             "IBCF adding trusted peer: {} (trust level: {})",
             peer.domain, peer.trust_level
         );
-        state.trusted_peers.insert(peer.domain.clone(), peer);
+        state.trusted_peers.insert(peer.domain.clone(), peer.clone());
+
+        // Push to SBC if client is available
+        if let Some(client) = self.sbc_client.read().unwrap().as_ref() {
+            let client_clone = Arc::clone(client);
+            let peer_clone = peer.clone();
+            tokio::spawn(async move {
+                for ip in &peer_clone.ip_addresses {
+                    let rule = crate::sbc_integration::AclRule {
+                        id: Uuid::new_v4(),
+                        ip_network: format!("{}/32", ip),
+                        action: crate::sbc_integration::AclAction::Allow,
+                        priority: 100,
+                    };
+                    if let Err(e) = client_clone.push_acl_rule(&rule).await {
+                        error!("Failed to push IBCF trusted peer {} to SBC: {}", peer_clone.domain, e);
+                    }
+                }
+            });
+        }
+
         Ok(())
     }
 
@@ -636,17 +798,20 @@ impl crate::core::routing::RouteHandler for IbcfModule {
             SecurityAction::Modify => {
                 // Apply topology hiding and header modifications
                 let mut modified_req = req.clone();
-                self.apply_topology_hiding(&mut modified_req)?;
+                if let Err(e) = self.apply_topology_hiding(&mut modified_req) {
+                    warn!("IBCF failed to apply topology hiding: {}", e);
+                    return Ok(RouteAction::Forward(req));
+                }
                 debug!(
                     "IBCF modified request: {} -> {}",
                     source_domain, dest_domain
                 );
-                // In a full implementation, would return modified request
+                return Ok(RouteAction::Forward(modified_req));
             }
         }
 
         // Request passed all checks - allow to continue
-        Ok(RouteAction::Continue)
+        Ok(RouteAction::Forward(req))
     }
 }
 
@@ -761,6 +926,8 @@ mod tests {
             replacement: "public.ims".to_string(),
             hide_port: true,
             pseudonym_key: Some([0u8; 32]),
+            encrypt_topology: false,
+            encryption_key: None,
         };
 
         ibcf.add_topology_rule(rule).unwrap();
@@ -779,6 +946,64 @@ mod tests {
         assert!(ibcf.matches_pattern("test.cynan.ims", "*.cynan.ims"));
         assert!(ibcf.matches_pattern("example.com", "example.com"));
         assert!(!ibcf.matches_pattern("other.com", "example.com"));
+    }
+
+    #[test]
+    fn test_call_id_tokenization() {
+        let ibcf = IbcfModule::new("cynan.ims".to_string());
+        let internal_id = "internal-session-123";
+        
+        let token1 = ibcf.tokenize_call_id(internal_id);
+        assert!(token1.starts_with("ext-"));
+        
+        let token2 = ibcf.tokenize_call_id(internal_id);
+        assert_eq!(token1, token2);
+        
+        let recovered = ibcf.detokenize_call_id(&token1);
+        assert_eq!(recovered, internal_id);
+    }
+
+    #[test]
+    fn test_header_scrubbing() {
+        let ibcf = IbcfModule::new("cynan.ims".to_string());
+        let mut req_str = "REGISTER sip:cynan.ims SIP/2.0\r\n\
+                           Via: SIP/2.0/UDP 127.0.0.1:5060\r\n\
+                           User-Agent: Asterisk PBX 18.0\r\n\
+                           X-Asterisk-Info: private\r\n\
+                           Content-Length: 0\r\n\r\n".to_string();
+        
+        ibcf.scrub_headers(&mut req_str);
+        
+        assert!(!req_str.contains("User-Agent"));
+        assert!(!req_str.contains("X-Asterisk-Info"));
+        assert!(req_str.contains("Via:"));
+        assert!(req_str.contains("Content-Length: 0"));
+    }
+
+    #[test]
+    fn test_topology_encryption() {
+        let ibcf = IbcfModule::new("cynan.ims".to_string());
+        let key = [1u8; 32];
+        let original = "sip:internal-node.cynan.ims";
+        
+        let encrypted = ibcf.encrypt_topology_component(&key, original).unwrap();
+        assert!(encrypted.starts_with("ep-"));
+        assert_ne!(encrypted, original);
+        
+        // Rule application test
+        let rule = TopologyHidingRule {
+            name: "encrypt-hide".to_string(),
+            source_pattern: "internal-node.cynan.ims".to_string(),
+            replacement: "border.ims".to_string(),
+            hide_port: false,
+            pseudonym_key: None,
+            encrypt_topology: true,
+            encryption_key: Some(key),
+        };
+        ibcf.add_topology_rule(rule).unwrap();
+        
+        let result = ibcf.apply_topology_rules(original);
+        assert!(result.starts_with("ep-"));
     }
 
     #[tokio::test]

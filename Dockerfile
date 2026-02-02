@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------------
 #  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
 #  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
-#  [VERSION]    v0.8.0-final
+#  [VERSION]    v0.8.5
 #  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
 #  
 #  AI GOVERNANCE NOTICE:
@@ -18,29 +18,29 @@
 # ---------------------------------------------------------------------------------
 #  Copyright (c) 2026 Fastcomcorp, LLC. All rights reserved.
 # ---------------------------------------------------------------------------------
+# Build Stage
+FROM rust:latest as builder
 
-core:
-  sip_port: 5060
-  allow_tls: true
-  metrics_port: 9100
-database:
-  host: localhost
-  port: 5432
-  user: cynan
-  password: change_me
-  name: cynan_hss
-transport:
-  udp_addr: 0.0.0.0:5060
-  tcp_addr: 0.0.0.0:3868
-  tls:
-    cert_path: /etc/cynan/certs/core.crt
-    key_path: /etc/cynan/certs/core.key
-armoricore:
-  grpc_target: http://127.0.0.1:50051
-  nats_url: nats://127.0.0.1:4222
-security:
-  require_tls: true
-  ipsec_policy: strict
-sbc:
-  api_url: http://localhost:8080
-  api_key: secret_token
+WORKDIR /usr/src/cynan
+COPY . .
+
+# Install dependencies for PQC if needed (e.g., clang, cmake)
+# RUN apt-get update && apt-get install -y clang cmake
+
+# Build the release binary
+RUN cargo build --release
+
+# Runtime Stage
+# Use Google's Distroless image for better security (no shell, no package manager)
+FROM gcr.io/distroless/cc-debian12
+
+COPY --from=builder /usr/src/cynan/target/release/cynan /usr/local/bin/cynan
+
+# Expose ports
+# 5060: SIP (UDP/TCP)
+# 8080: Monitoring API
+# 8081: O-RAN O2 Interface
+EXPOSE 5060/udp 5060/tcp 8080 8081
+
+# Command to run the executable
+ENTRYPOINT ["cynan"]

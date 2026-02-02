@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package cups;
+
+// Control & User Plane Separation (CUPS) Service
+// Allows the Control Plane (S-CSCF) to manage media sessions on the User Plane.
+service CupsService {
+  // Create a new media session (allocates resources)
+  rpc CreateSession (CreateSessionRequest) returns (CreateSessionResponse);
+
+  // Modify an existing session (e.g., update remote SDP)
+  rpc ModifySession (ModifySessionRequest) returns (ModifySessionResponse);
+
+  // Delete a session (free resources)
+  rpc DeleteSession (DeleteSessionRequest) returns (DeleteSessionResponse);
+
+  // Heartbeat to check User Plane health
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message CreateSessionRequest {
+  string session_id = 1;      // SIP Call-ID
+  string remote_ip = 2;       // Remote RTP IP
+  uint32 remote_port = 3;     // Remote RTP Port
+  string codec = 4;           // Negotiated codec
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  uint32 local_port = 2;      // Allocated local RTP port
+  string local_ip = 3;        // Local RTP IP
+}
+
+message ModifySessionRequest {
+  string session_id = 1;
+  string remote_ip = 2;
+  uint32 remote_port = 3;
+}
+
+message ModifySessionResponse {
+  bool success = 1;
+}
+
+message DeleteSessionRequest {
+  string session_id = 1;
+}
+
+message DeleteSessionResponse {
+  bool success = 1;
+}
+
+message HeartbeatRequest {}
+
+message HeartbeatResponse {
+  bool healthy = 1;
+  uint32 active_sessions = 2;
+}

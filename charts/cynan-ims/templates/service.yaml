@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------------
 #  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
 #  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
-#  [VERSION]    v0.8.0-final
+#  [VERSION]    v0.8.5
 #  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
 #  
 #  AI GOVERNANCE NOTICE:
@@ -18,29 +18,30 @@
 # ---------------------------------------------------------------------------------
 #  Copyright (c) 2026 Fastcomcorp, LLC. All rights reserved.
 # ---------------------------------------------------------------------------------
-
-core:
-  sip_port: 5060
-  allow_tls: true
-  metrics_port: 9100
-database:
-  host: localhost
-  port: 5432
-  user: cynan
-  password: change_me
-  name: cynan_hss
-transport:
-  udp_addr: 0.0.0.0:5060
-  tcp_addr: 0.0.0.0:3868
-  tls:
-    cert_path: /etc/cynan/certs/core.crt
-    key_path: /etc/cynan/certs/core.key
-armoricore:
-  grpc_target: http://127.0.0.1:50051
-  nats_url: nats://127.0.0.1:4222
-security:
-  require_tls: true
-  ipsec_policy: strict
-sbc:
-  api_url: http://localhost:8080
-  api_key: secret_token
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cynan-ims.fullname" . }}
+  labels:
+    {{- include "cynan-ims.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.ports.sip }}
+      targetPort: sip-udp
+      protocol: UDP
+      name: sip-udp
+    - port: {{ .Values.service.ports.sip }}
+      targetPort: sip-tcp
+      protocol: TCP
+      name: sip-tcp
+    - port: {{ .Values.service.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    - port: {{ .Values.service.ports.o2 }}
+      targetPort: o2
+      protocol: TCP
+      name: o2
+  selector:
+    {{- include "cynan-ims.selectorLabels" . | nindent 4 }}
