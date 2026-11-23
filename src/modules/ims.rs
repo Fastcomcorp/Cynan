@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -269,27 +269,35 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
             // 2. Ensure the Linux kernel has XFRM support enabled.
             // 3. Check for SPI collisions in the `IpsecManager`.
             if sec_header.contains("ipsec-3gpp") {
-                // Mock selection: Choose ipsec-3gpp, hmac-sha-1-96, trans, esp
-                // In production, use parse_security_header and select best match
+                let parsed_mechs = crate::modules::auth::parse_security_header(&sec_header)
+                    .unwrap_or_default();
+                let client_mech = parsed_mechs
+                    .iter()
+                    .find(|m| m.mechanism == "ipsec-3gpp");
+
                 // Allocate Server SPIs using high entropy CSPRNG (RFC 4301 requires unique SPIs)
                 let (spi_c, spi_s) = {
                     use rand::Rng;
                     let mut rng = rand::thread_rng();
                     (rng.gen::<u32>(), rng.gen::<u32>())
                 };
-                let port_c = 5060; // Standard SIP
-                let port_s = 5060;
+                let port_c = client_mech.and_then(|m| m.port_c).unwrap_or(5060);
+                let port_s = client_mech.and_then(|m| m.port_s).unwrap_or(5060);
+                let (ck_in, ik_in) =
+                    crate::modules::auth::derive_3gpp_ipsec_keys(username.as_bytes(), spi_c, spi_s);
+                let (ck_out, ik_out) =
+                    crate::modules::auth::derive_3gpp_ipsec_keys(username.as_bytes(), spi_s, spi_c);
 
-                // Establish Security Associations (Inbound/Outbound)
+                // Establish Security Associations (Inbound/Outbound) with derived 3GPP TS 33.203 CK/IK
                 let sa_in = SecurityAssociation {
                     spi: spi_s,
                     source: ctx.peer.ip(),
                     destination: "127.0.0.1".parse().unwrap(), // Local IP
                     mode: IpsecMode::Transport,
-                    encryption_alg: "null".to_string(), // Null encryption for auth-only in this mock
-                    encryption_key: vec![],
+                    encryption_alg: "aes-cbc".to_string(),
+                    encryption_key: ck_in,
                     integrity_alg: "hmac-sha-1-96".to_string(),
-                    integrity_key: vec![0u8; 16], // Mock key
+                    integrity_key: ik_in,
                 };
 
                 let sa_out = SecurityAssociation {
@@ -297,10 +305,10 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
                     source: "127.0.0.1".parse().unwrap(),
                     destination: ctx.peer.ip(),
                     mode: IpsecMode::Transport,
-                    encryption_alg: "null".to_string(),
-                    encryption_key: vec![],
+                    encryption_alg: "aes-cbc".to_string(),
+                    encryption_key: ck_out,
                     integrity_alg: "hmac-sha-1-96".to_string(),
-                    integrity_key: vec![0u8; 16],
+                    integrity_key: ik_out,
                 };
 
                 // Create policies
@@ -400,21 +408,27 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
             .map(|s| s.as_str())
             .unwrap_or("MD5");
 
-        // Fetch user from database
-        // We use query_as in standard code, but here we invoke the DB layer
-        // Note: For this to work, the DB pool must be available in SharedState
-        // and users table populated.
-        let is_valid = if let Ok(Some(user)) =
-            crate::state::db::DatabaseQueries::get_user(ctx.state.pool(), &username).await
-        {
+        // Fetch user from database (or fail-closed mock store when running without an active DB pool)
+        let user_opt = if ctx.state.has_active_pool() {
+            crate::state::db::DatabaseQueries::get_user(ctx.state.pool(), &username)
+                .await
+                .ok()
+                .flatten()
+        } else {
+            ctx.state.get_mock_user(&username)
+        };
+
+        let mut authenticated_user_id = None;
+        let is_valid = if let Some(user) = user_opt {
+            authenticated_user_id = Some(user.id);
             match algorithm {
-                "ML-DSA-65" => {
+                "ML-DSA-65" | "Falcon-512" | "FN-DSA-512" => {
                     if let Some(key) = &user.ml_dsa_public_key {
                         verify_authentication(&auth_params, "REGISTER", &uri, key, &stored_nonce, true)?
                     } else {
                         warn!(
-                            "User {} requested ML-DSA-65 auth but has no public key",
-                            username
+                            "User {} requested {} PQC auth but has no public key provisioned",
+                            username, algorithm
                         );
                         false
                     }
@@ -425,7 +439,7 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
                     &uri,
                     user.password_hash.as_bytes(),
                     &stored_nonce,
-                    user.ml_dsa_public_key.is_some(), // PQC required if key exists
+                    user.ml_dsa_public_key.is_some(), // PQC required if key exists (anti-downgrade)
                 )?,
                 _ => {
                     warn!("Unsupported algorithm: {}", algorithm);
@@ -433,7 +447,7 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
                 }
             }
         } else {
-            // User not found in database - registration MUST fail
+            // User not found in database - registration MUST fail (fail-closed)
             warn!(
                 "Authentication failed: User {} not found in HSS database",
                 username
@@ -462,15 +476,31 @@ impl crate::core::routing::RouteHandler for RegistrarModule {
             })
             .unwrap_or_else(|| format!("sip:{}@{}", username, ctx.peer));
 
-        // Store location binding
-        let user_id = Uuid::new_v4(); // In production, get from HSS
-        ctx.state.insert_location(
-            user_id,
-            Location {
-                contact_uri: contact_uri.clone(),
-                last_seen: SystemTime::now(),
-            },
-        );
+        // Store location binding by both UUID and username/AOR
+        let user_id = authenticated_user_id.unwrap_or_else(Uuid::new_v4);
+        let location = Location {
+            contact_uri: contact_uri.clone(),
+            last_seen: SystemTime::now(),
+        };
+        ctx.state.insert_location(user_id, location.clone());
+        ctx.state.insert_location_by_name(&username, location);
+
+        // Write-through HA persistence to PostgreSQL when an active pool is available
+        if ctx.state.has_active_pool() {
+            if let Err(e) = crate::state::db::DatabaseQueries::upsert_location(
+                ctx.state.pool(),
+                &user_id,
+                &contact_uri,
+                3600,
+            )
+            .await
+            {
+                warn!(
+                    "Failed to persist location binding to PostgreSQL for {}: {}",
+                    username, e
+                );
+            }
+        }
 
         // Remove nonce after successful authentication
         self.nonces.remove(&username);
@@ -545,13 +575,15 @@ impl crate::core::routing::RouteHandler for ScsCfModule {
     async fn handle_request(
         &self,
         req: Request,
-        _ctx: RouteContext,
+        ctx: RouteContext,
     ) -> anyhow::Result<RouteAction> {
         let req_str = format!("{}", req);
 
         // Extract Call-ID for session tracking
         let call_id = extract_header(&req_str, "Call-ID")
             .unwrap_or_else(|| format!("call-{}", uuid::Uuid::new_v4()));
+        let from_uri = extract_header(&req_str, "From").unwrap_or_default();
+        let to_uri = extract_header(&req_str, "To").unwrap_or_else(|| req.uri.to_string());
 
         // S-CSCF Service Logic (iFC Processing)
         let as_manager_opt = {
@@ -619,9 +651,46 @@ impl crate::core::routing::RouteHandler for ScsCfModule {
                         Err(e) => warn!("Rf: Accounting request failed: {}", e),
                     }
                 }
+
+                // Track active session in SharedState and update Prometheus gauge
+                let mut session_state = SessionState {
+                    call_id: call_id.clone(),
+                    from_uri: from_uri.clone(),
+                    to_uri: to_uri.clone(),
+                    state: SessionStatus::Initiated,
+                    created_at: SystemTime::now(),
+                };
+                ctx.state.metrics().increment_active_sessions();
+
+                // Check if target subscriber is registered locally for on-net termination
+                let req_uri_str = req.uri.to_string();
+                let target_user = req_uri_str
+                    .trim_start_matches("sip:")
+                    .trim_start_matches("sips:")
+                    .split('@')
+                    .next()
+                    .unwrap_or("");
+                if let Some(target_loc) = ctx.state.get_location_by_name(target_user) {
+                    session_state.state = SessionStatus::Established;
+                    ctx.state.insert_session(&call_id, session_state);
+                    let resp_str = format!(
+                        "SIP/2.0 200 OK\r\nContact: <{}>\r\nContent-Length: 0\r\n\r\n",
+                        target_loc.contact_uri
+                    );
+                    return Ok(RouteAction::Respond(Response::try_from(resp_str.as_bytes())?));
+                }
+
+                ctx.state.insert_session(&call_id, session_state);
             }
-            Method::Bye => {
-                info!("BYE received for session termination, Call-ID: {}", call_id);
+            Method::Ack => {
+                if let Some(mut session) = ctx.state.get_session(&call_id) {
+                    session.state = SessionStatus::Established;
+                    ctx.state.insert_session(&call_id, session);
+                }
+                return Ok(RouteAction::Respond(crate::core::sip_utils::create_200_ok()?));
+            }
+            Method::Bye | Method::Cancel => {
+                info!("{} received for session termination, Call-ID: {}", req.method, call_id);
                 
                 let username = extract_user_from_request(&req_str).unwrap_or_default();
                 if let Some(diameter) = &diameter_opt {
@@ -632,9 +701,20 @@ impl crate::core::routing::RouteHandler for ScsCfModule {
                     let _ = diameter.send_accounting_request(&username, crate::integration::AccountingRecordType::Stop, 2).await;
                 }
 
+                if let Some(mut session) = ctx.state.get_session(&call_id) {
+                    session.state = SessionStatus::Terminated;
+                    ctx.state.insert_session(&call_id, session);
+                }
+                ctx.state.metrics().decrement_active_sessions();
+
                 return Ok(RouteAction::Respond(Response::try_from(
                     b"SIP/2.0 200 OK\r\n\r\n".as_ref(),
                 )?));
+            }
+            Method::Options => {
+                return Ok(RouteAction::Respond(
+                    crate::core::sip_utils::create_200_options_ok()?,
+                ));
             }
             _ => {}
         }

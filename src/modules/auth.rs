@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -513,6 +513,28 @@ mod tests {
             verify_authentication(&auth_params, method, uri, &public_key, &nonce, false).unwrap();
         assert!(valid_generic, "Generic verification with Falcon key failed");
     }
+}
+
+/// Derive 3GPP TS 33.203 / RFC 3310 Confidentiality Key (CK) and Integrity Key (IK)
+/// for Gm IPsec Security Associations using HMAC-SHA256 KDF.
+pub fn derive_3gpp_ipsec_keys(seed_material: &[u8], spi_c: u32, spi_s: u32) -> (Vec<u8>, Vec<u8>) {
+    use ring::hmac;
+    let key = hmac::Key::new(hmac::HMAC_SHA256, seed_material);
+
+    let mut ck_info = Vec::with_capacity(14);
+    ck_info.extend_from_slice(b"3gpp-gm-ck");
+    ck_info.extend_from_slice(&spi_c.to_be_bytes());
+    let ck_tag = hmac::sign(&key, &ck_info);
+
+    let mut ik_info = Vec::with_capacity(14);
+    ik_info.extend_from_slice(b"3gpp-gm-ik");
+    ik_info.extend_from_slice(&spi_s.to_be_bytes());
+    let ik_tag = hmac::sign(&key, &ik_info);
+
+    (
+        ck_tag.as_ref()[..16].to_vec(),
+        ik_tag.as_ref()[..16].to_vec(),
+    )
 }
 
 /// IMS Security Mechanism (RFC 3329)
