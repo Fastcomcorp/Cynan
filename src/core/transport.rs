@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -65,6 +65,64 @@ pub struct TransportListener {
     tcp_connections: Arc<RwLock<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>>,
 }
 
+/// Maximum UDP datagram payload size (64 KB) to accommodate ML-DSA-65 PQC signatures (~7.2 KB)
+pub const MAX_UDP_SIP_PACKET_SIZE: usize = 65535;
+/// Maximum TCP/TLS stream read chunk size
+pub const STREAM_READ_CHUNK_SIZE: usize = 16384;
+/// Maximum accumulated SIP message size over TCP/TLS (128 KB DoS guard)
+pub const MAX_SIP_STREAM_BUFFER_SIZE: usize = 131072;
+
+/// Extract zero or more complete framed SIP messages from a stream accumulator buffer.
+///
+/// Looks for the `\r\n\r\n` header terminator and parses `Content-Length` (case-insensitive).
+/// If `Content-Length` is omitted, defaults body length to `0` so header-only SIP messages
+/// are emitted immediately without blocking.
+pub fn extract_framed_sip_messages(acc: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut messages = Vec::new();
+
+    loop {
+        let header_end = acc.windows(4).position(|w| w == b"\r\n\r\n");
+        let Some(hdr_end) = header_end else {
+            if acc.len() > MAX_SIP_STREAM_BUFFER_SIZE {
+                acc.clear();
+            }
+            break;
+        };
+
+        let body_start = hdr_end + 4;
+        let headers_str = String::from_utf8_lossy(&acc[..hdr_end]);
+        let content_length = headers_str
+            .lines()
+            .find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                if k.trim().eq_ignore_ascii_case("content-length")
+                    || k.trim().eq_ignore_ascii_case("l")
+                {
+                    v.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        let total_len = body_start.saturating_add(content_length);
+        if total_len > MAX_SIP_STREAM_BUFFER_SIZE {
+            acc.clear();
+            break;
+        }
+
+        if acc.len() < total_len {
+            // Wait for remaining body bytes
+            break;
+        }
+
+        let msg_bytes: Vec<u8> = acc.drain(..total_len).collect();
+        messages.push(msg_bytes);
+    }
+
+    messages
+}
+
 impl TransportListener {
     pub async fn bind_udp(address: &SocketAddr) -> Result<Self> {
         let socket = UdpSocket::bind(address).await?;
@@ -73,7 +131,7 @@ impl TransportListener {
 
         let recv_socket = socket.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 4096];
+            let mut buf = vec![0u8; MAX_UDP_SIP_PACKET_SIZE];
             loop {
                 match recv_socket.recv_from(&mut buf).await {
                     Ok((len, peer)) => {
@@ -123,20 +181,25 @@ impl TransportListener {
 
                         tokio::spawn(async move {
                             let (mut reader, mut writer) = stream.into_split();
-                            let mut buf = vec![0u8; 4096];
+                            let mut buf = vec![0u8; STREAM_READ_CHUNK_SIZE];
+                            let mut accumulator = Vec::with_capacity(STREAM_READ_CHUNK_SIZE);
 
                             let read_task = tokio::spawn(async move {
                                 loop {
                                     match reader.read(&mut buf).await {
                                         Ok(0) => break,
                                         Ok(len) => {
-                                            let msg = TransportMessage {
-                                                data: buf[..len].to_vec(),
-                                                peer,
-                                                response_tx: Some(response_tx.clone()),
-                                            };
-                                            if sender.send(msg).await.is_err() {
-                                                break;
+                                            accumulator.extend_from_slice(&buf[..len]);
+                                            let framed = extract_framed_sip_messages(&mut accumulator);
+                                            for data in framed {
+                                                let msg = TransportMessage {
+                                                    data,
+                                                    peer,
+                                                    response_tx: Some(response_tx.clone()),
+                                                };
+                                                if sender.send(msg).await.is_err() {
+                                                    return;
+                                                }
                                             }
                                         }
                                         Err(e) => {
@@ -199,20 +262,25 @@ impl TransportListener {
                                     connections.write().await.insert(peer, response_tx.clone());
 
                                     let (mut reader, mut writer) = tokio::io::split(tls_stream);
-                                    let mut buf = vec![0u8; 4096];
+                                    let mut buf = vec![0u8; STREAM_READ_CHUNK_SIZE];
+                                    let mut accumulator = Vec::with_capacity(STREAM_READ_CHUNK_SIZE);
 
                                     let read_task = tokio::spawn(async move {
                                         loop {
                                             match reader.read(&mut buf).await {
                                                 Ok(0) => break,
                                                 Ok(len) => {
-                                                    let msg = TransportMessage {
-                                                        data: buf[..len].to_vec(),
-                                                        peer,
-                                                        response_tx: Some(response_tx.clone()),
-                                                    };
-                                                    if sender.send(msg).await.is_err() {
-                                                        break;
+                                                    accumulator.extend_from_slice(&buf[..len]);
+                                                    let framed = extract_framed_sip_messages(&mut accumulator);
+                                                    for data in framed {
+                                                        let msg = TransportMessage {
+                                                            data,
+                                                            peer,
+                                                            response_tx: Some(response_tx.clone()),
+                                                        };
+                                                        if sender.send(msg).await.is_err() {
+                                                            return;
+                                                        }
                                                     }
                                                 }
                                                 Err(e) => {

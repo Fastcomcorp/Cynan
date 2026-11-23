@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -129,6 +129,59 @@ pub fn create_480_temporarily_unavailable(_req: &Request, message: &str) -> Resu
     );
     Response::try_from(response_bytes.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to create 480 response: {}", e))
+}
+
+/// Create a 483 Too Many Hops response when Max-Forwards reaches 0 (RFC 3261 Section 16.3)
+pub fn create_483_too_many_hops(_req: &Request) -> Result<Response> {
+    let response_bytes = b"SIP/2.0 483 Too Many Hops\r\nContent-Length: 0\r\n\r\n";
+    Response::try_from(response_bytes.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to create 483 response: {}", e))
+}
+
+/// Create a 200 OK response for SIP OPTIONS capability discovery (RFC 3261 Section 11)
+pub fn create_200_options_ok() -> Result<Response> {
+    let response_bytes = b"SIP/2.0 200 OK\r\n\
+                           Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REGISTER\r\n\
+                           Supported: path, gruu, timer\r\n\
+                           Accept: application/sdp\r\n\
+                           Content-Length: 0\r\n\r\n";
+    Response::try_from(response_bytes.as_ref())
+        .map_err(|e| anyhow::anyhow!("Failed to create 200 OPTIONS response: {}", e))
+}
+
+/// Check if a SIP request explicitly carries `Max-Forwards: 0` (loop prevention per RFC 3261)
+pub fn check_max_forwards_zero(req: &Request) -> bool {
+    let req_str = req.to_string();
+    if let Some(mf_val) = extract_header(&req_str, "Max-Forwards") {
+        if let Ok(hops) = mf_val.trim().parse::<u32>() {
+            return hops == 0;
+        }
+    }
+    false
+}
+
+/// Compute an RFC 3261 Section 17.2.3 server transaction key `(branch, sent-by, method, cseq, call-id)`
+/// when a valid Via `branch=` parameter is present.
+pub fn compute_transaction_key(req: &Request) -> Option<String> {
+    if req.method == rsip::Method::Ack {
+        return None;
+    }
+    let req_str = req.to_string();
+    let via = extract_header(&req_str, "Via")?;
+    let branch = via.split(';').find_map(|param| {
+        let (k, v) = param.trim().split_once('=')?;
+        if k.trim().eq_ignore_ascii_case("branch") && !v.trim().is_empty() {
+            Some(v.trim().to_string())
+        } else {
+            None
+        }
+    })?;
+    let cseq = extract_header(&req_str, "CSeq").unwrap_or_default();
+    let call_id = extract_header(&req_str, "Call-ID").unwrap_or_default();
+    if call_id.is_empty() || cseq.is_empty() {
+        return None;
+    }
+    Some(format!("{}:{}:{}:{}", branch, req.method, cseq, call_id))
 }
 
 /// Extract a header value from a SIP request string

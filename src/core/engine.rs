@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -172,9 +172,15 @@ impl SipCore {
             None
         };
 
-        registry.register_module(Arc::new(IcsCfModule::with_diameter(diameter_interface)));
+        registry.register_module(Arc::new(IcsCfModule::with_diameter(Arc::clone(
+            &diameter_interface,
+        ))));
         registry.register_module(Arc::new(RegistrarModule::default()));
-        registry.register_module(Arc::new(ScsCfModule::new().with_as_manager(as_integration.clone())));
+        registry.register_module(Arc::new(
+            ScsCfModule::new()
+                .with_as_manager(as_integration.clone())
+                .with_diameter(Arc::clone(&diameter_interface)),
+        ));
         registry.register_module(Arc::new(BgcfModule::new()));
 
         // Modules requiring SBC integration
@@ -207,15 +213,28 @@ impl SipCore {
         let armoricore = ArmoricoreBridge::new(&config.armoricore).await?;
 
         // Initialize USER PLANE components (CUPS)
-        // Spawn gRPC server for User Plane
+        // Spawn gRPC server for User Plane (fallback to ephemeral port if 50051 is busy in parallel tests)
         let armoricore_bridge = Arc::new(armoricore);
-        let upf_addr: SocketAddr = "127.0.0.1:50051".parse()?;
+        let upf_addr: SocketAddr = match std::net::TcpListener::bind("127.0.0.1:50051") {
+            Ok(std_listener) => {
+                let addr = std_listener.local_addr()?;
+                drop(std_listener);
+                addr
+            }
+            Err(_) => {
+                let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+                let addr = std_listener.local_addr()?;
+                drop(std_listener);
+                addr
+            }
+        };
         let upf = crate::user_plane::UserPlaneServer::new(
             Arc::clone(&armoricore_bridge),
             10000,
             20000
         );
 
+        let upf_connect_url = format!("http://{}", upf_addr);
         let upf_task = tokio::spawn(async move {
             info!("Starting User Plane gRPC server on {}", upf_addr);
             if let Err(e) = tonic::transport::Server::builder()
@@ -231,7 +250,7 @@ impl SipCore {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Connect Control Plane to User Plane
-        let cups_client = crate::integration::CupsController::connect("http://127.0.0.1:50051".to_string()).await?;
+        let cups_client = crate::integration::CupsController::connect(upf_connect_url).await?;
 
         let integration = IntegrationPlane {
             armoricore: (*armoricore_bridge).clone(),
@@ -315,21 +334,53 @@ impl SipCore {
                                             info!("Processing {} request from {} in spawned task", req.method(), peer);
                                             let mut responded = false;
                                             let mut current_req = req.clone();
+
+                                            // RFC 3261 Section 17.2: Absorb UDP/SIP retransmissions using transaction cache
+                                            let tx_key = crate::core::sip_utils::compute_transaction_key(&current_req);
+                                            if let Some(ref key) = tx_key {
+                                                if let Some(cached_bytes) = state.get_cached_transaction_response(key) {
+                                                    if let Some(tx) = response_tx {
+                                                        let _ = tx.send(cached_bytes).await;
+                                                    } else {
+                                                        let _ = listener_clone.send(&cached_bytes, peer).await;
+                                                    }
+                                                    return;
+                                                }
+                                            }
+
+                                            // Update metrics once per incoming SIP request (outside the handler loop)
+                                            let metrics = state.metrics();
+                                            metrics.increment_requests();
+                                            match current_req.method {
+                                                rsip::Method::Invite => metrics.increment_invite(),
+                                                rsip::Method::Register => metrics.increment_register(),
+                                                _ => {}
+                                            }
+
+                                            // RFC 3261 Section 16.3: Max-Forwards loop protection
+                                            if crate::core::sip_utils::check_max_forwards_zero(&current_req) {
+                                                if let Ok(resp) = crate::core::sip_utils::create_483_too_many_hops(&current_req) {
+                                                    if let Ok(bytes) = serialize_response(&resp) {
+                                                        if let Some(ref key) = tx_key {
+                                                            state.cache_transaction_response(key, bytes.clone());
+                                                        }
+                                                        if let Some(tx) = response_tx {
+                                                            let _ = tx.send(bytes).await;
+                                                        } else {
+                                                            let _ = listener_clone.send(&bytes, peer).await;
+                                                        }
+                                                        state.metrics().increment_responses();
+                                                        return;
+                                                    }
+                                                }
+                                            }
+
                                             for handler in &handler_set {
                                                 let ctx = RouteContext {
                                                     peer,
                                                     config: Arc::clone(&config),
                                                     state: state.clone(),
                                                 };
-
-                                                // Update metrics for incoming request
-                                                let metrics = state.metrics();
-                                                metrics.increment_requests();
-                                                match current_req.method {
-                                                    rsip::Method::Invite => metrics.increment_invite(),
-                                                    rsip::Method::Register => metrics.increment_register(),
-                                                    _ => {}
-                                                }
 
                                                 match handler.handle_request(current_req.clone(), ctx).await {
                                                     Ok(RouteAction::Forward(new_req)) => {
@@ -338,6 +389,9 @@ impl SipCore {
                                                     Ok(RouteAction::Respond(resp)) => {
                                                         match serialize_response(&resp) {
                                                             Ok(bytes) => {
+                                                                if let Some(ref key) = tx_key {
+                                                                    state.cache_transaction_response(key, bytes.clone());
+                                                                }
                                                                 // Try to send via response channel first (TCP/TLS)
                                                                 if let Some(tx) = response_tx {
                                                                     if tx.send(bytes.clone()).await.is_ok() {
