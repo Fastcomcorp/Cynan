@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -47,6 +47,10 @@ impl SharedState {
         Ok(SharedState {
             inner: Arc::new(State {
                 user_locations: DashMap::new(),
+                user_locations_by_name: DashMap::new(),
+                mock_users: DashMap::new(),
+                sessions: DashMap::new(),
+                transactions: DashMap::new(),
                 database,
                 metrics: Arc::new(crate::metrics::Metrics::new()),
             }),
@@ -68,6 +72,70 @@ impl SharedState {
             .map(|entry| entry.value().clone())
     }
 
+    /// Store location binding indexed by subscriber username / AOR
+    pub fn insert_location_by_name(&self, username: &str, contact: Location) {
+        self.inner
+            .user_locations_by_name
+            .insert(username.to_string(), contact);
+    }
+
+    /// Retrieve location binding by subscriber username / AOR
+    pub fn get_location_by_name(&self, username: &str) -> Option<Location> {
+        self.inner
+            .user_locations_by_name
+            .get(username)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Provision an explicit test subscriber in fail-closed mock mode
+    pub fn insert_mock_user(&self, user: db::User) {
+        self.inner.mock_users.insert(user.username.clone(), user);
+    }
+
+    /// Retrieve an explicit test subscriber in fail-closed mock mode
+    pub fn get_mock_user(&self, username: &str) -> Option<db::User> {
+        self.inner
+            .mock_users
+            .get(username)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Insert or update an active SIP session in shared state
+    pub fn insert_session(&self, call_id: &str, session: crate::modules::ims::SessionState) {
+        self.inner.sessions.insert(call_id.to_string(), session);
+    }
+
+    /// Retrieve an active SIP session by Call-ID
+    pub fn get_session(&self, call_id: &str) -> Option<crate::modules::ims::SessionState> {
+        self.inner
+            .sessions
+            .get(call_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// Remove an active SIP session by Call-ID
+    pub fn remove_session(&self, call_id: &str) -> Option<crate::modules::ims::SessionState> {
+        self.inner.sessions.remove(call_id).map(|(_, v)| v)
+    }
+
+    /// Cache a serialized SIP response for RFC 3261 server transaction retransmission absorption
+    pub fn cache_transaction_response(&self, tx_key: &str, response_bytes: Vec<u8>) {
+        if self.inner.transactions.len() >= 50_000 {
+            self.inner.transactions.clear();
+        }
+        self.inner
+            .transactions
+            .insert(tx_key.to_string(), response_bytes);
+    }
+
+    /// Retrieve a cached serialized SIP response for a retransmitted transaction key
+    pub fn get_cached_transaction_response(&self, tx_key: &str) -> Option<Vec<u8>> {
+        self.inner
+            .transactions
+            .get(tx_key)
+            .map(|entry| entry.value().clone())
+    }
+
     pub fn pool(&self) -> &PgPool {
         self.inner
             .database
@@ -85,6 +153,10 @@ impl SharedState {
         SharedState {
             inner: Arc::new(State {
                 user_locations: DashMap::new(),
+                user_locations_by_name: DashMap::new(),
+                mock_users: DashMap::new(),
+                sessions: DashMap::new(),
+                transactions: DashMap::new(),
                 database: DatabaseLayer { pool: None },
                 metrics: Arc::new(crate::metrics::Metrics::new()),
             }),
@@ -94,6 +166,10 @@ impl SharedState {
 
 pub struct State {
     user_locations: DashMap<Uuid, Location>,
+    user_locations_by_name: DashMap<String, Location>,
+    mock_users: DashMap<String, db::User>,
+    sessions: DashMap<String, crate::modules::ims::SessionState>,
+    transactions: DashMap<String, Vec<u8>>,
     database: DatabaseLayer,
     metrics: Arc<crate::metrics::Metrics>,
 }
