@@ -1,6 +1,6 @@
 # 🦅 Cynan IMS Core
 
-[![Version](https://img.shields.io/badge/Version-0.8.5-blue.svg?style=for-the-badge)]()
+[![Version](https://img.shields.io/badge/Version-0.9.0-blue.svg?style=for-the-badge)]()
 [![License](https://img.shields.io/badge/License-Apache%202.0%20%2F%20Commercial-blue.svg?style=for-the-badge)]()
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg?style=for-the-badge)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/Status-Development-orange.svg?style=for-the-badge)]()
@@ -85,7 +85,7 @@ graph TB
 
 ## ⚡ Key Technical Features
 
-### �️ Post-Quantum Security (NIST Standards)
+### ️ Post-Quantum Security (NIST Standards)
 *   **Zero Trust Architecture**: Every interconnect is signed and validated.
 *   **Hybrid PQC-TLS**: ML-KEM-768 for quantum-safe key exchange with ECDHE fallback.
 *   **Eagle-Fast Auth**: Falcon-512 signatures providing high-throughput SIP authentication.
@@ -108,7 +108,7 @@ graph TB
 
 ---
 
-## 📊 Implementation Status (v0.8.5)
+## 📊 Implementation Status (v0.9.0)
 
 | Category | Component | Status | Description |
 | :--- | :--- | :--- | :--- |
@@ -128,17 +128,19 @@ graph TB
 
 Explore our detailed technical artifacts for deep dives into Cynan's internals:
 
-*   � **[PQC Architecture](docs/PQC_ARCHITECTURE.md)** - The core theory and implementation of quantum security.
+*    **[PQC Architecture](docs/PQC_ARCHITECTURE.md)** - The core theory and implementation of quantum security.
 *   🟢 **[SBC Connectivity](docs/SBC_CONNECTIVITY_GUIDE.md)** - Guide for integrating external networks and SBCs.
 *   🚀 **[Migration Guide](docs/PQC_MIGRATION_GUIDE.md)** - Step-by-step PQC adoption path.
 *   🛠️ **[Troubleshooting](docs/PQC_TROUBLESHOOTING.md)** - Operational guide for common scenarios.
 *   🔍 **[Security Audit](docs/pqc_security_audit.md)** - Current security evaluations and threat model.
 *   📈 **[Performance Analysis](docs/PQC_PERFORMANCE_ANALYSIS.md)** - Algorithm benchmarking and efficiency results.
+*   🗺️ **[Development Roadmap](docs/DEVELOPMENT_ROADMAP.md)** - Phased architectural history and mathematical hardening notes.
+*   📋 **[Changelog](CHANGELOG.md)** - Detailed release notes and engineering rationale for v0.9.0.
 *   🛡️ **[Supply Chain Integrity](SUPPLY_CHAIN_INTEGRITY.md)** - Cryptographic manifest and digital watermark verification.
 
 ---
 
-## � System Requirements
+##  System Requirements
 
 Cynan is engineered for high-performance execution on modern hardware. For carrier-grade production deployments (1000+ CPS), we recommend the following:
 

@@ -1,6 +1,6 @@
 [package]
 name = "cynan"
-version = "0.8.5"
+version = "0.9.0"
 edition = "2021"
 authors = ["Fastcomcorp, LLC"]
 description = "Development version of comprehensive IMS core with Armoricore integration, Diameter HSS interfaces, RTP packet routing, TLS certificates, BGCF/MGCF PSTN interconnect, IBCF inter-operator security, SLF multi-HSS support, Application Server integration, and Gm IPsec - NOT FOR PRODUCTION USE"
