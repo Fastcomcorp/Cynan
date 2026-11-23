@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.5
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -163,17 +163,26 @@ impl RtpStreamMapping {
     }
 
     pub fn update_stats(&mut self, header: &RtpHeader) {
-        if header.sequence_number < self.last_sequence
-            && self.last_sequence - header.sequence_number > 1000
-        {
-            info!(
-                "RTP sequence number wraparound detected for stream {}",
-                self.armoricore_stream_id
-            );
+        if self.packet_count == 0 {
+            self.ssrc = header.ssrc;
+            self.last_sequence = header.sequence_number;
+            self.packet_count = 1;
+            return;
+        }
+
+        // RFC 3550 modular 16-bit sequence distance check
+        let delta = header.sequence_number.wrapping_sub(self.last_sequence);
+        if delta > 0 && delta < 0x8000 {
+            if header.sequence_number < self.last_sequence {
+                info!(
+                    "RTP sequence number wraparound detected for stream {}",
+                    self.armoricore_stream_id
+                );
+            }
+            self.last_sequence = header.sequence_number;
         }
 
         self.ssrc = header.ssrc;
-        self.last_sequence = header.sequence_number;
         self.packet_count += 1;
     }
 
@@ -186,6 +195,7 @@ impl RtpStreamMapping {
 pub struct UserPlaneServer {
     mappings: Arc<DashMap<String, RtpStreamMapping>>, // Key: session_id
     port_mappings: Arc<DashMap<u16, String>>,         // Key: local_port -> session_id
+    session_tasks: Arc<DashMap<String, tokio::task::AbortHandle>>, // Key: session_id -> listener task
     armoricore_bridge: Arc<ArmoricoreBridge>,
     running: Arc<std::sync::atomic::AtomicBool>,
     port_manager: Arc<RtpPortManager>,
@@ -196,6 +206,7 @@ impl UserPlaneServer {
         Self {
             mappings: Arc::new(DashMap::new()),
             port_mappings: Arc::new(DashMap::new()),
+            session_tasks: Arc::new(DashMap::new()),
             armoricore_bridge,
             running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             port_manager: Arc::new(RtpPortManager::new(start_port, end_port)),
@@ -263,24 +274,23 @@ impl CupsService for UserPlaneServer {
     ) -> Result<Response<CreateSessionResponse>, Status> {
         let req = request.into_inner();
         
-        let port = self.port_manager.allocate_port()
+        let port = self
+            .port_manager
+            .allocate_even_port()
+            .or_else(|| self.port_manager.allocate_port())
             .ok_or_else(|| Status::resource_exhausted("No available RTP ports"))?;
 
         let remote_addr: SocketAddr = format!("{}:{}", req.remote_ip, req.remote_port)
             .parse()
             .map_err(|_| Status::invalid_argument("Invalid remote address"))?;
 
-        // In a real implementation we would spawn the listener here if not already running
-        // For Phase 9, we assume listeners are pre-spawned or spawned on demand
-        // Currently we just register the mapping
-        
-        // Spawn listener for this port
+        // Spawn listener for this port and track its AbortHandle so delete_session frees the UdpSocket
         let mappings = self.mappings.clone();
         let port_mappings = self.port_mappings.clone();
         let bridge = self.armoricore_bridge.clone();
         let running = self.running.clone();
         
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             let _ = Self::run_rtp_listener(port, mappings, port_mappings, bridge, running).await;
         });
 
@@ -293,6 +303,8 @@ impl CupsService for UserPlaneServer {
 
         self.mappings.insert(req.session_id.clone(), mapping);
         self.port_mappings.insert(port, req.session_id.clone());
+        self.session_tasks
+            .insert(req.session_id.clone(), join_handle.abort_handle());
 
         Ok(Response::new(CreateSessionResponse {
             session_id: req.session_id,
@@ -324,9 +336,12 @@ impl CupsService for UserPlaneServer {
         request: Request<DeleteSessionRequest>,
     ) -> Result<Response<DeleteSessionResponse>, Status> {
         let req = request.into_inner();
+        if let Some((_, abort_handle)) = self.session_tasks.remove(&req.session_id) {
+            abort_handle.abort();
+        }
         if let Some((_, mapping)) = self.mappings.remove(&req.session_id) {
-            self.port_manager.release_port(mapping.local_rtp_port);
             self.port_mappings.remove(&mapping.local_rtp_port);
+            self.port_manager.release_port(mapping.local_rtp_port);
             Ok(Response::new(DeleteSessionResponse { success: true }))
         } else {
             Ok(Response::new(DeleteSessionResponse { success: false }))
@@ -362,6 +377,22 @@ impl RtpPortManager {
 
     pub fn allocate_port(&self) -> Option<u16> {
         for port in self.start_port..=self.end_port {
+            if !self.allocated_ports.contains_key(&port) {
+                self.allocated_ports.insert(port, true);
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    /// Allocate an even-numbered RTP port per RFC 3550 (reserving odd 2n+1 for RTCP)
+    pub fn allocate_even_port(&self) -> Option<u16> {
+        let first_even = if self.start_port % 2 == 0 {
+            self.start_port
+        } else {
+            self.start_port.saturating_add(1)
+        };
+        for port in (first_even..=self.end_port).step_by(2) {
             if !self.allocated_ports.contains_key(&port) {
                 self.allocated_ports.insert(port, true);
                 return Some(port);
