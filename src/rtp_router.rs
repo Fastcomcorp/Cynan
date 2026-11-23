@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -160,19 +160,26 @@ impl RtpStreamMapping {
     }
 
     pub fn update_stats(&mut self, header: &RtpHeader) {
-        // Detect sequence number wraparound (RFC 3550)
-        if header.sequence_number < self.last_sequence
-            && self.last_sequence - header.sequence_number > 1000
-        {
-            // Sequence number wrapped around
-            info!(
-                "RTP sequence number wraparound detected for stream {}",
-                self.armoricore_stream_id
-            );
+        if self.packet_count == 0 {
+            self.ssrc = header.ssrc;
+            self.last_sequence = header.sequence_number;
+            self.packet_count = 1;
+            return;
+        }
+
+        // RFC 3550 modular 16-bit sequence distance check
+        let delta = header.sequence_number.wrapping_sub(self.last_sequence);
+        if delta > 0 && delta < 0x8000 {
+            if header.sequence_number < self.last_sequence {
+                info!(
+                    "RTP sequence number wraparound detected for stream {}",
+                    self.armoricore_stream_id
+                );
+            }
+            self.last_sequence = header.sequence_number;
         }
 
         self.ssrc = header.ssrc;
-        self.last_sequence = header.sequence_number;
         self.packet_count += 1;
     }
 
@@ -399,6 +406,22 @@ impl RtpPortManager {
     /// Allocate an available RTP port
     pub fn allocate_port(&self) -> Option<u16> {
         for port in self.start_port..=self.end_port {
+            if !self.allocated_ports.contains_key(&port) {
+                self.allocated_ports.insert(port, true);
+                return Some(port);
+            }
+        }
+        None
+    }
+
+    /// Allocate an even-numbered RTP port per RFC 3550 (reserving odd 2n+1 for RTCP)
+    pub fn allocate_even_port(&self) -> Option<u16> {
+        let first_even = if self.start_port % 2 == 0 {
+            self.start_port
+        } else {
+            self.start_port.saturating_add(1)
+        };
+        for port in (first_even..=self.end_port).step_by(2) {
             if !self.allocated_ports.contains_key(&port) {
                 self.allocated_ports.insert(port, true);
                 return Some(port);

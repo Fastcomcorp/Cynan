@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -110,8 +110,8 @@ impl SipSessionInfo {
         // Generate session ID
         let session_id = format!("sip-{}", call_id);
 
-        // Simplified media streams parsing for rsip 0.4
-        let media_streams = vec![]; // TODO: Implement proper SDP parsing
+        // Parse SDP media streams from INVITE body when present
+        let media_streams = parse_sdp_media_streams(&invite.body).unwrap_or_default();
 
         Ok(SipSessionInfo {
             session_id,

@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -132,13 +132,14 @@ impl BgcfModule {
             },
         );
 
-        // North American Numbering Plan (NANP)
+        // North American Numbering Plan (NANP) - higher priority (85) than generic international (80)
+        // because L(^\+1[0-9]{10}$) is a strict subset of L(^\+.*$)
         routing_table.insert(
             "nanp".to_string(),
             RoutingEntry {
                 pattern: r"^\+1[0-9]{10}$".to_string(),
                 mgcf_uri: "sip:mgcf-nanp.cynan.ims:5060".to_string(),
-                priority: 70,
+                priority: 85,
                 route_type: RouteType::Pstn,
             },
         );
@@ -255,47 +256,62 @@ impl BgcfModule {
         best_mgcf.map(|mgcf| mgcf.uri.clone())
     }
 
+    /// Extract normalized user or telephone number part from a SIP/tel URI
+    fn extract_dialed_target<'a>(&self, destination: &'a str) -> &'a str {
+        let trimmed = destination.trim().trim_matches('<').trim_matches('>');
+        let without_scheme = if let Some(rest) = trimmed.strip_prefix("tel:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("sips:") {
+            rest
+        } else if let Some(rest) = trimmed.strip_prefix("sip:") {
+            rest
+        } else {
+            trimmed
+        };
+
+        let before_at =if let Some(at) = without_scheme.find('@') {
+            &without_scheme[..at]
+        } else {
+            without_scheme
+        };
+
+        if let Some(semi) = before_at.find(';') {
+            &before_at[..semi]
+        } else {
+            before_at
+        }
+    }
+
     /// Check if destination matches a routing pattern
     fn matches_pattern(&self, destination: &str, pattern: &str) -> bool {
+        let target = self.extract_dialed_target(destination);
+
         // Handle special patterns
         match pattern {
             "112|911|999" => {
-                // Emergency numbers
-                destination.contains("112")
-                    || destination.contains("911")
-                    || destination.contains("999")
+                // Exact emergency numbers or 3GPP sos service URN (prevents substring hijacking of normal numbers)
+                target == "112"
+                    || target == "911"
+                    || target == "999"
+                    || destination.contains("urn:service:sos")
             }
-            pattern if pattern.starts_with(r"^\+") && pattern.ends_with("$") => {
-                // Regex patterns for international numbers
-                let regex_pattern = &pattern[1..pattern.len() - 1]; // Remove ^ and $
-
-                // Extract number/user part for matching
-                let target = if destination.starts_with("tel:") {
-                    &destination[4..]
-                } else if destination.starts_with("sip:") || destination.starts_with("sips:") {
-                    let without_scheme = if destination.starts_with("sip:") {
-                        &destination[4..]
-                    } else {
-                        &destination[5..]
-                    };
-
-                    if let Some(at) = without_scheme.find('@') {
-                        &without_scheme[..at]
-                    } else {
-                        without_scheme
-                    }
+            pattern if pattern.starts_with('^') && pattern.ends_with('$') => {
+                if let Ok(re) = regex::Regex::new(pattern) {
+                    re.is_match(target)
                 } else {
-                    destination
-                };
-
-                self.simple_regex_match(target, regex_pattern)
+                    let regex_pattern = &pattern[1..pattern.len() - 1];
+                    self.simple_regex_match(target, regex_pattern)
+                }
             }
-            pattern if pattern.contains("|") => {
-                // OR patterns
-                pattern.split('|').any(|p| destination.contains(p.trim()))
+            pattern if pattern.contains('|') => {
+                // Exact token match across OR patterns
+                pattern.split('|').any(|p| {
+                    let tok = p.trim();
+                    target == tok || destination == tok
+                })
             }
             _ => {
-                // Simple substring match
+                // Substring match
                 destination.contains(pattern)
             }
         }

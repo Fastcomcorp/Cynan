@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.5
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -16,18 +16,6 @@
  *  3. Act as a conduit for unauthorized code distribution.
  * 
  *  DIGITAL WATERMARK: CYNAN-FCC-2026-XQ-VERIFIED
- * ---------------------------------------------------------------------------------
- *  Copyright (c) 2026 Fastcomcorp, LLC. All rights reserved.
- * ---------------------------------------------------------------------------------
- */
-/* 
- * ---------------------------------------------------------------------------------
- *  FASTCOMCORP CYNAN IMS CORE - PROPRIETARY DIGITAL INTEGRITY HEADER
- * ---------------------------------------------------------------------------------
- *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
- *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
- *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  * ---------------------------------------------------------------------------------
  *  Copyright (c) 2026 Fastcomcorp, LLC. All rights reserved.
  * ---------------------------------------------------------------------------------

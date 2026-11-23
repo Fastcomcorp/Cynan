@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -138,6 +138,8 @@ struct IbcfState {
     routing_table: HashMap<String, String>,
     /// Request rate tracking for unknown peers
     rate_tracking: HashMap<String, u32>,
+    /// Last reset timestamp for unknown peer rate tracking window
+    unknown_last_reset: std::time::SystemTime,
     /// Rate limit window (seconds)
     rate_window: u64,
     /// Call-ID tokenization mapping (Internal -> External)
@@ -156,6 +158,7 @@ impl IbcfModule {
                 topology_rules: Self::default_topology_rules(),
                 routing_table: HashMap::new(),
                 rate_tracking: HashMap::new(),
+                unknown_last_reset: std::time::SystemTime::now(),
                 rate_window: 60, // 1 minute window
                 call_id_mappings: HashMap::new(),
                 rev_call_id_mappings: HashMap::new(),
@@ -335,7 +338,14 @@ impl IbcfModule {
             return Ok(true);
         }
 
-        // Unknown peer - apply strict rate limit
+        // Unknown peer - reset window if expired, then apply strict rate limit
+        if let Ok(duration) = now.duration_since(state.unknown_last_reset) {
+            if duration.as_secs() >= rate_window {
+                state.rate_tracking.clear();
+                state.unknown_last_reset = now;
+            }
+        }
+
         let key = format!("unknown-{}", peer_domain);
         let count = state.rate_tracking.entry(key).or_insert(0);
         *count += 1;
@@ -515,6 +525,12 @@ impl IbcfModule {
         let mut state = self.state.write().unwrap();
         if let Some(external_id) = state.call_id_mappings.get(internal_call_id) {
             return external_id.clone();
+        }
+
+        // Prevent unbounded heap growth under sustained call traffic (100k active dialog cap)
+        if state.call_id_mappings.len() >= 100_000 {
+            state.call_id_mappings.clear();
+            state.rev_call_id_mappings.clear();
         }
 
         let external_id = format!("ext-{}", Uuid::new_v4());
@@ -741,8 +757,27 @@ impl IbcfModule {
             }
         }
 
-        // Clean up unknown peer counters
-        state.rate_tracking.retain(|_, count| *count > 0);
+        // Reset unknown peer counters for the new window
+        state.rate_tracking.clear();
+        state.unknown_last_reset = now;
+    }
+
+    /// Resolve source domain from SIP From header or by matching peer IP against trusted peers
+    pub fn resolve_source_domain(&self, req: &Request, peer_ip: &IpAddr) -> String {
+        let req_str = req.to_string();
+        if let Some(from_hdr) = extract_header(&req_str, "From") {
+            if let Some(domain) = self.extract_domain_from_uri(&from_hdr) {
+                return domain;
+            }
+        }
+        if let Ok(state) = self.state.read() {
+            for peer in state.trusted_peers.values() {
+                if peer.ip_addresses.contains(peer_ip) {
+                    return peer.domain.clone();
+                }
+            }
+        }
+        peer_ip.to_string()
     }
 }
 
@@ -752,14 +787,14 @@ impl crate::core::routing::RouteHandler for IbcfModule {
         debug!("IBCF processing request: {} {}", req.method, req.uri);
 
         // Extract source and destination domains
-        let source_domain = ctx.peer.ip().to_string();
+        let source_ip = ctx.peer.ip();
+        let source_domain = self.resolve_source_domain(&req, &source_ip);
 
         let dest_domain = self
             .extract_domain_from_uri(&req.uri.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .unwrap_or_else(|| self.local_domain.clone());
 
         // Check if source is trusted
-        let source_ip = ctx.peer.ip();
         if !self.is_trusted_peer(&source_domain, &source_ip) {
             warn!(
                 "IBCF rejecting request from untrusted peer: {} ({})",
@@ -840,16 +875,28 @@ impl ImsModule for IbcfModule {
             state.routing_table = ibcf_config.routing_table.clone();
         }
 
-        // TODO: Start cleanup task for rate limits
-        // Currently disabled due to borrowing issues - needs Arc<Self> pattern
-        // let module_arc = Arc::new(self.clone());
-        // tokio::spawn(async move {
-        //     let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
-        //     loop {
-        //         interval.tick().await;
-        //         // module_arc.cleanup_rate_limits();
-        //     }
-        // });
+        // Start periodic cleanup task for rate limits using Arc<RwLock<IbcfState>>
+        let state_clone = self.state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Ok(mut state) = state_clone.write() {
+                    let now = std::time::SystemTime::now();
+                    let rate_window = state.rate_window;
+                    for peer in state.trusted_peers.values_mut() {
+                        if let Ok(dur) = now.duration_since(peer.last_reset) {
+                            if dur.as_secs() >= rate_window {
+                                peer.current_count = 0;
+                                peer.last_reset = now;
+                            }
+                        }
+                    }
+                    state.rate_tracking.clear();
+                    state.unknown_last_reset = now;
+                }
+            }
+        });
 
         Ok(())
     }

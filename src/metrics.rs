@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -63,6 +63,18 @@ impl Metrics {
 
     pub fn increment_invite(&self) {
         self.invite_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_active_sessions(&self) {
+        self.active_sessions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn decrement_active_sessions(&self) {
+        let _ = self.active_sessions.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(1)),
+        );
     }
 
     /// Export metrics in Prometheus text format

@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -193,7 +193,7 @@ impl SlfModule {
         // Simple load balancing strategy based on subscriber ID hash
         // In production, this would use more sophisticated routing logic
 
-        let available_hss: Vec<&HssInstance> = state
+        let mut available_hss: Vec<&HssInstance> = state
             .hss_instances
             .values()
             .filter(|hss| hss.current_subscribers < hss.max_subscribers)
@@ -203,20 +203,24 @@ impl SlfModule {
             return Err(anyhow!("No available HSS instances"));
         }
 
-        // Use subscriber ID hash for consistent routing
+        // Sort by HSS ID so consistent hashing is deterministic across process restarts
+        available_hss.sort_by(|a, b| a.id.cmp(&b.id));
+
+        // Use subscriber ID 64-bit FNV-1a hash for uniform routing across all digits
         let hash = self.simple_hash(subscriber_id);
         let hss_index = hash % available_hss.len();
 
         Ok(available_hss[hss_index].id.clone())
     }
 
-    /// Simple hash function for load balancing
+    /// 64-bit FNV-1a hash function for uniform subscriber load balancing across HSS instances
     fn simple_hash(&self, input: &str) -> usize {
-        let mut hash: usize = 0;
-        for (i, byte) in input.bytes().enumerate() {
-            hash ^= (byte as usize) << ((i % 8) * 8);
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in input.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
         }
-        hash
+        hash as usize
     }
 
     /// Register a new HSS instance

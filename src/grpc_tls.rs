@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -105,8 +105,8 @@ pub async fn create_pqc_grpc_tls_config(
         domain
     );
 
-    // Note: Tonic 0.12 with rustls 0.23 automatically uses aws-lc-rs if available
-    // The integration happens at the rustls level via the "aws-lc-rs" feature
+    // Ensure the FIPS/PQC aws-lc-rs crypto provider is installed for rustls 0.23+
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     // Read certificate and key files as bytes
     let cert_pem =

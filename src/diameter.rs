@@ -4,7 +4,7 @@
  * ---------------------------------------------------------------------------------
  *  [OWNER]      Fastcomcorp, LLC | https://www.fastcomcorp.com
  *  [PRODUCT]    Cynan Post-Quantum Secure IMS (VoLTE/VoNR/VoWiFi)
- *  [VERSION]    v0.8.0-final
+ *  [VERSION]    v0.9.0
  *  [INTEGRITY]  CRYPTO-SIGNED SUPPLY CHAIN COMPONENT
  *  
  *  AI GOVERNANCE NOTICE:
@@ -139,6 +139,13 @@ impl Avp {
         }
 
         buf.put_slice(&self.data);
+
+        // RFC 6733 Section 4.1: Pad AVP on wire to 32-bit (4-byte) boundary
+        // Padding bytes are not reflected in self.length
+        let padding = (4 - (self.length as usize % 4)) % 4;
+        for _ in 0..padding {
+            buf.put_u8(0);
+        }
     }
 
     pub fn decode(buf: &mut Bytes) -> Result<Self> {
@@ -175,6 +182,11 @@ impl Avp {
 
         let mut data = vec![0; data_len];
         buf.copy_to_slice(&mut data);
+
+        // Advance past RFC 6733 Section 4.1 32-bit boundary padding bytes if present
+        let padding = (4 - (length as usize % 4)) % 4;
+        let advance = padding.min(buf.remaining());
+        buf.advance(advance);
 
         Ok(Self {
             code,
@@ -272,9 +284,12 @@ impl DiameterMessage {
 
 /// Diameter AVP codes (RFC 6733 + 3GPP extensions)
 pub mod avp_codes {
+    pub const HOST_IP_ADDRESS: u32 = 257;
     pub const SESSION_ID: u32 = 263;
-    pub const RESULT_CODE: u32 = 268;
     pub const ORIGIN_HOST: u32 = 264;
+    pub const VENDOR_ID: u32 = 266;
+    pub const RESULT_CODE: u32 = 268;
+    pub const PRODUCT_NAME: u32 = 269;
     pub const ORIGIN_REALM: u32 = 296;
     pub const DESTINATION_HOST: u32 = 293;
     pub const DESTINATION_REALM: u32 = 283;
